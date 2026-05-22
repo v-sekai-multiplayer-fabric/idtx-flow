@@ -95,10 +95,20 @@ class "VSekaiMToonAPI" (
 
     token v_sekai:mtoon:outlineWidthMode = "none" (
         allowedTokens = ["none", "worldCoordinates", "screenCoordinates"]
-        doc = "Outline projection space, or none to disable the outline pass."
+        doc = """Outline projection space, or `none` to disable the
+        outline pass. Under the CHI-255 JFA renderer path both modes
+        produce a per-pixel outline width: `worldCoordinates` resolves
+        outlineWidthFactor (in metres) to a pixel count using the
+        silhouette's view-space depth and the camera's vertical FoV,
+        `screenCoordinates` treats outlineWidthFactor directly as
+        normalised viewport units. The exported-`.vrm` VRChat fallback
+        still differentiates the two as backface-extrusion modes."""
     )
     float v_sekai:mtoon:outlineWidthFactor = 0.0 (
-        doc = "Outline thickness in the chosen mode's units (metres or screen-relative)."
+        doc = """Outline thickness in the chosen mode's units. VRM 1.0
+        units: metres for worldCoordinates, normalised viewport units
+        (typically `[0, 1]`) for screenCoordinates. The JFA shader
+        converts both to pixels at the silhouette pixel itself."""
     )
     asset v_sekai:mtoon:outlineWidthMultiplyTexture = @@ (
         doc = "Per-texel outline-width modulation."

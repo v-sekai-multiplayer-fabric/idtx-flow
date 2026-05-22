@@ -28,8 +28,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install USD Python bindings
-        run: pip install --upgrade pip && pip install "usd-core>=24.05"
+      - name: Install USD Python bindings + test deps
+        run: |
+          pip install --upgrade pip
+          pip install "usd-core>=24.05" "numpy>=1.26" "hypothesis>=6.100" pytest
 
       - name: Run usdchecker on every fixture
         env:
@@ -51,6 +53,9 @@ jobs:
         env:
           PXR_PLUGINPATH_NAME: ${{ github.workspace }}/schema
         run: python scripts/check_schemas.py
+
+      - name: JFA outline reference + property tests (CHI-255)
+        run: pytest tests/slang_validate/test_outline_jfa.py -v
 
       - name: Round-trip diff (hook must not mutate pre-applied fixtures)
         env:
@@ -85,7 +90,9 @@ jobs:
           python-version: "3.11"
 
       - name: Install USD Python bindings
-        run: pip install --upgrade pip && pip install "usd-core>=24.05"
+        run: |
+          pip install --upgrade pip
+          pip install "usd-core>=24.05"
 
       - name: Import blender/post_export_hook.py
         run: python -c "import importlib.util, pathlib; \
