@@ -1,7 +1,4 @@
 {
-    "_comment_license": "Copyright 2026 The openusd-fabric authors. SPDX-License-Identifier: MIT.",
-    "_comment_purpose": "Registers the V-Sekai codeless USD plugin so VSekaiMToonAPI / VSekaiSpringBoneAPI / VSekaiSpringBoneColliderAPI resolve at runtime. Drop this directory on PXR_PLUGINPATH_NAME before any UsdStage::Open call (see blender/post_export_hook.py and idtx-flow's GDExtension entry point).",
-
     "Plugins": [
         {
             "Name": "vSekaiUsd",
@@ -13,24 +10,15 @@
                 "Types": {
                     "VSekaiMToonAPI": {
                         "bases": ["UsdAPISchemaBase"],
-                        "alias": { "UsdSchemaBase": "VSekaiMToonAPI" },
-                        "apiSchemaType": "singleApply",
-                        "schemaKind": "singleApplyAPI",
-                        "schemaIdentifier": "VSekaiMToonAPI"
+                        "schemaKind": "singleApplyAPI"
                     },
                     "VSekaiSpringBoneAPI": {
                         "bases": ["UsdAPISchemaBase"],
-                        "alias": { "UsdSchemaBase": "VSekaiSpringBoneAPI" },
-                        "apiSchemaType": "singleApply",
-                        "schemaKind": "singleApplyAPI",
-                        "schemaIdentifier": "VSekaiSpringBoneAPI"
+                        "schemaKind": "singleApplyAPI"
                     },
                     "VSekaiSpringBoneColliderAPI": {
                         "bases": ["UsdAPISchemaBase"],
-                        "alias": { "UsdSchemaBase": "VSekaiSpringBoneColliderAPI" },
-                        "apiSchemaType": "singleApply",
-                        "schemaKind": "singleApplyAPI",
-                        "schemaIdentifier": "VSekaiSpringBoneColliderAPI"
+                        "schemaKind": "singleApplyAPI"
                     }
                 }
             }
