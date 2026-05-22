@@ -39,12 +39,19 @@ class "VSekaiMToonAPI" (
         token apiSchemaType = "singleApply"
         bool skipCodeGeneration = true
     }
-    doc = """API schema carrying MToon shader uniforms from V-Sekai materials.
+    doc = """API schema carrying VRM 1.0 MToon shader uniforms from V-Sekai
+    materials.
 
-    Applied to UsdShade Material prims (or their primary surface Shader child).
-    Attribute names follow the VRM 1.0 MToon convention so the Blender hook,
-    idtx-flow's Godot mapper, and the Unity schema mapper agree on the wire
-    representation without a translation layer."""
+    Applied to UsdShade Material prims (or their primary surface Shader
+    child). Attribute names mirror the VRM 1.0 MToon spec field names so
+    the Blender hook (post vrm-addon-for-blender export), idtx-flow's
+    Godot mapper (which feeds godot-vrm's MToon shader), and the Unity
+    schema mapper (UniVRM10) agree on the wire representation without a
+    per-host translation layer.
+
+    VRM 0.x assets are upgraded to VRM 1.0 / MToon 1.0 at the import
+    boundary per CHI-252's upgrade tables; this schema only models the
+    1.0 surface."""
 )
 {
     color3f v_sekai:mtoon:shadeColorFactor = (1.0, 1.0, 1.0) (
@@ -56,31 +63,56 @@ class "VSekaiMToonAPI" (
     float v_sekai:mtoon:shadingShiftFactor = 0.0 (
         doc = "Shading shift along the lighting axis; range [-1, 1]."
     )
+    asset v_sekai:mtoon:shadingShiftTexture = @@ (
+        doc = "Per-texel shading-shift offset added to shadingShiftFactor."
+    )
+    float v_sekai:mtoon:shadingShiftTextureScale = 1.0
     float v_sekai:mtoon:shadingToonyFactor = 0.9 (
         doc = "Sharpness of the lit/shade boundary; range [0, 1]."
     )
-    color3f v_sekai:mtoon:rimColorFactor = (0.0, 0.0, 0.0) (
-        doc = "Rim-light colour."
+    float v_sekai:mtoon:giEqualizationFactor = 0.9 (
+        doc = "Tonemap of ambient/global-illumination contribution; range [0, 1]."
     )
+
+    color3f v_sekai:mtoon:matcapFactor = (1.0, 1.0, 1.0)
+    asset v_sekai:mtoon:matcapTexture = @@ (
+        doc = "Matcap texture sampled by view-space normal."
+    )
+
     asset v_sekai:mtoon:rimMultiplyTexture = @@
     float v_sekai:mtoon:rimLightingMixFactor = 0.0 (
         doc = "Mix between scene lighting and constant rim; range [0, 1]."
     )
-    asset v_sekai:mtoon:matcapTexture = @@ (
-        doc = "Matcap texture sampled by view-space normal."
+    color3f v_sekai:mtoon:parametricRimColorFactor = (0.0, 0.0, 0.0) (
+        doc = "Parametric rim colour, applied even without a rim texture."
     )
-    color3f v_sekai:mtoon:matcapFactor = (1.0, 1.0, 1.0)
+    float v_sekai:mtoon:parametricRimFresnelPowerFactor = 1.0 (
+        doc = "Fresnel exponent for parametric rim falloff."
+    )
+    float v_sekai:mtoon:parametricRimLiftFactor = 0.0 (
+        doc = "Constant lift added to the parametric rim term; range [0, 1]."
+    )
+
     token v_sekai:mtoon:outlineWidthMode = "none" (
         allowedTokens = ["none", "worldCoordinates", "screenCoordinates"]
         doc = "Outline projection space, or none to disable the outline pass."
     )
     float v_sekai:mtoon:outlineWidthFactor = 0.0 (
-        doc = "Outline thickness in the chosen mode's units."
+        doc = "Outline thickness in the chosen mode's units (metres or screen-relative)."
+    )
+    asset v_sekai:mtoon:outlineWidthMultiplyTexture = @@ (
+        doc = "Per-texel outline-width modulation."
     )
     color3f v_sekai:mtoon:outlineColorFactor = (0.0, 0.0, 0.0)
     float v_sekai:mtoon:outlineLightingMixFactor = 1.0
-    float v_sekai:mtoon:giEqualizationFactor = 0.9 (
-        doc = "Tonemap of ambient/global-illumination contribution; range [0, 1]."
+
+    asset v_sekai:mtoon:uvAnimationMaskTexture = @@
+    float v_sekai:mtoon:uvAnimationScrollXSpeedFactor = 0.0
+    float v_sekai:mtoon:uvAnimationScrollYSpeedFactor = 0.0
+    float v_sekai:mtoon:uvAnimationRotationSpeedFactor = 0.0
+
+    int v_sekai:mtoon:renderQueueOffsetNumber = 0 (
+        doc = "Optional render-queue bias for transparent sorting tweaks."
     )
     bool v_sekai:mtoon:transparentWithZWrite = false (
         doc = "If true, transparent surface writes depth (sharper sorting)."

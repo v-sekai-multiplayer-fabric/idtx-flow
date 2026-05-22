@@ -1,0 +1,6 @@
+-- Copyright 2026 The openusd-fabric authors.
+-- SPDX-License-Identifier: MIT
+--
+-- Mesh-side specs (CHI-253). Hosts the tris-to-quads ILP and any other
+-- GPU compute that goes through the LeanSlang DSL. Empty at Phase 1;
+-- the ILP reformulation work is a parallel track that lands here.

@@ -71,12 +71,15 @@ def Xform "Avatar"
             color3f v_sekai:mtoon:shadeColorFactor = (0.85, 0.75, 0.7)
             float v_sekai:mtoon:shadingShiftFactor = -0.1
             float v_sekai:mtoon:shadingToonyFactor = 0.95
-            color3f v_sekai:mtoon:rimColorFactor = (0.2, 0.2, 0.3)
+            float v_sekai:mtoon:giEqualizationFactor = 0.9
+            color3f v_sekai:mtoon:parametricRimColorFactor = (0.2, 0.2, 0.3)
+            float v_sekai:mtoon:parametricRimFresnelPowerFactor = 2.0
+            float v_sekai:mtoon:parametricRimLiftFactor = 0.0
             float v_sekai:mtoon:rimLightingMixFactor = 0.5
             token v_sekai:mtoon:outlineWidthMode = "screenCoordinates"
             float v_sekai:mtoon:outlineWidthFactor = 0.002
             color3f v_sekai:mtoon:outlineColorFactor = (0.05, 0.02, 0.02)
-            float v_sekai:mtoon:giEqualizationFactor = 0.9
+            float v_sekai:mtoon:outlineLightingMixFactor = 1.0
             bool v_sekai:mtoon:transparentWithZWrite = false
 
             token outputs:surface

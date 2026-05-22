@@ -52,6 +52,26 @@ jobs:
           PXR_PLUGINPATH_NAME: ${{ github.workspace }}/schema
         run: python scripts/check_schemas.py
 
+      - name: Round-trip diff (hook must not mutate pre-applied fixtures)
+        env:
+          PXR_PLUGINPATH_NAME: ${{ github.workspace }}/schema
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p .roundtrip
+          for f in tests/fixtures/*.usda; do
+            name=$(basename "$f" .usda)
+            cp "$f" ".roundtrip/${name}.in.usda"
+            usdcat --flatten ".roundtrip/${name}.in.usda" \
+              > ".roundtrip/${name}.before.flat.usda"
+            python blender/post_export_hook.py \
+              --in ".roundtrip/${name}.in.usda"
+            usdcat --flatten ".roundtrip/${name}.in.usda" \
+              > ".roundtrip/${name}.after.flat.usda"
+            diff -u ".roundtrip/${name}.before.flat.usda" \
+                    ".roundtrip/${name}.after.flat.usda"
+          done
+
   blender-hook-import:
     # Smoke-checks that the post-export hook imports cleanly under the
     # same pxr build CI uses. Does not exercise Blender itself yet —
