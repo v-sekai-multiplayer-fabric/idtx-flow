@@ -226,6 +226,12 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
         accessors.push_back(ai);
     }
 
+    // Per-mesh node indices — assigned after the bone nodes so the
+    // glTF node table layout is: [root, bones..., meshes...].
+    // mesh_node_index[mi] is the glTF node index that wraps mesh mi
+    // (or -1 if the mesh was empty / skipped).
+    std::vector<int32_t> mesh_node_index(mesh_count, -1);
+
     // ---------------------------------------------------------------
     auto* skel = idtx_avatar_get_skeleton(avatar);
     int32_t bone_count = (skel != nullptr) ? idtx_skeleton_get_bone_count(skel) : 0;
@@ -274,24 +280,31 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             j.end_object();
         j.end_array();
 
-        // Nodes — root first, then bones. Each bone references its
-        // children via parent-of-i scan. Bones with no parent
-        // (parent_index == -1) become children of the avatar root.
+        // Compute mesh node indices up front: nodes after the bones.
+        // Walk in order; skip meshes that had no primitive data.
+        int32_t next_node = 1 + bone_count;
+        for (int32_t mi = 0; mi < mesh_count; ++mi) {
+            if (mesh_primitives[mi].positions_accessor < 0) continue;
+            mesh_node_index[mi] = next_node++;
+        }
+
+        // Nodes — root first, then bones, then meshes.
         j.key("nodes"); j.begin_array();
-            // Root node — its children are the orphan bones.
+            // Root node — its children are the orphan bones + mesh nodes.
             j.begin_object();
                 j.key("name"); j.string(idtx_avatar_get_name(avatar));
-                if (bone_count > 0) {
-                    std::vector<int32_t> root_children;
-                    for (int32_t i = 0; i < bone_count; ++i) {
-                        if (idtx_skeleton_get_bone_parent(skel, i) < 0) {
-                            root_children.push_back(bone_node_index(i));
-                        }
+                std::vector<int32_t> root_children;
+                for (int32_t i = 0; i < bone_count; ++i) {
+                    if (idtx_skeleton_get_bone_parent(skel, i) < 0) {
+                        root_children.push_back(bone_node_index(i));
                     }
-                    if (!root_children.empty()) {
-                        j.key("children");
-                        j.int_array(root_children.data(), root_children.size());
-                    }
+                }
+                for (int32_t mi = 0; mi < mesh_count; ++mi) {
+                    if (mesh_node_index[mi] >= 0) root_children.push_back(mesh_node_index[mi]);
+                }
+                if (!root_children.empty()) {
+                    j.key("children");
+                    j.int_array(root_children.data(), root_children.size());
                 }
             j.end_object();
 
@@ -309,6 +322,23 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                     if (!children.empty()) {
                         j.key("children");
                         j.int_array(children.data(), children.size());
+                    }
+                j.end_object();
+            }
+
+            // One node per mesh. Has `mesh` index into meshes[] and,
+            // when there's a skeleton + the mesh has skinning, a `skin`
+            // reference (always skin 0 in this single-skin MVP).
+            for (int32_t mi = 0; mi < mesh_count; ++mi) {
+                if (mesh_node_index[mi] < 0) continue;
+                auto* mh = idtx_avatar_get_mesh(avatar, mi);
+                j.begin_object();
+                    j.key("name");
+                    j.string(mh != nullptr ? idtx_mesh_get_name(mh) : "Mesh");
+                    j.key("mesh"); j.integer(mi);
+                    if (bone_count > 0 && mh != nullptr
+                        && idtx_mesh_get_bones_per_vertex(mh) == 4) {
+                        j.key("skin"); j.integer(0);
                     }
                 j.end_object();
             }
