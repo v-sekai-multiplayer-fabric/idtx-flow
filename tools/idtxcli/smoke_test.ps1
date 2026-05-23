@@ -22,7 +22,8 @@ Copy-Item -Force thirdparty\openusd-25.11\lib\usd_ms.dll $cliDir
 Copy-Item -Force thirdparty\openusd-25.11\bin\tbb12.dll $cliDir
 Copy-Item -Force usd\libs\windows\libidtx_usd.dll $cliDir
 
-$env:PXR_PLUGINPATH_NAME = (Resolve-Path 'thirdparty\openusd-25.11\lib\usd').Path
+$env:PXR_PLUGINPATH_NAME = (Resolve-Path 'thirdparty\openusd-25.11\lib\usd').Path + ';' + `
+    (Resolve-Path 'openusd-fabric\schema').Path
 
 # usdchecker + usdcat live in the with-Python build because the no-
 # Python USD build doesn't include the CLI tools. usdchecker gates
