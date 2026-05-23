@@ -7,6 +7,8 @@
 #include <godot_cpp/classes/box_shape3d.hpp>
 #include <godot_cpp/classes/capsule_shape3d.hpp>
 #include <godot_cpp/classes/collision_shape3d.hpp>
+#include <godot_cpp/classes/csg_shape3d.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/cylinder_shape3d.hpp>
 #include <godot_cpp/classes/material.hpp>
 #include <godot_cpp/classes/mesh.hpp>
@@ -129,7 +131,15 @@ static ::idtx_mesh_t* BuildMeshFromSurface(
 
     godot::PackedVector3Array verts   = arrays[godot::Mesh::ARRAY_VERTEX];
     godot::PackedInt32Array   indices = arrays[godot::Mesh::ARRAY_INDEX];
-    if (verts.size() == 0 || indices.size() == 0) return nullptr;
+    if (verts.size() == 0) return nullptr;
+    // CSG bakes often produce un-indexed triangle soup (one vertex
+    // per face-corner, no separate index buffer). Synthesise the
+    // identity index buffer [0, 1, 2, ..., N-1] so the downstream
+    // USD writer sees the same shape regardless of source.
+    if (indices.size() == 0) {
+        indices.resize(verts.size());
+        for (int i = 0; i < verts.size(); ++i) indices[i] = i;
+    }
 
     ::idtx_mesh_t* out = ::idtx_mesh_create();
     godot::String name = base_name + godot::String("_") + godot::String::num_int64(surface_index);
@@ -579,6 +589,104 @@ static void CollectMeshes(
                 idtx_avatar_add_mesh(avatar, m, mat_idx);
             }
         }
+    } else if (auto* csg = godot::Object::cast_to<godot::CSGShape3D>(node)) {
+        // CSG: only the TOPMOST CSGShape3D in a CSG tree owns the
+        // baked result. Mirror Godot's glTF exporter
+        // (modules/gltf/gltf_document.cpp _convert_csg_shape_to_gltf):
+        // call update_shape() to force the bake, then read the
+        // ArrayMesh at index 1 of get_meshes() (index 0 is the
+        // Transform3D). Children of a non-root CSG node have already
+        // been folded into the root's baked output, so the walker
+        // skips them.
+        if (csg->is_root_shape()) {
+            // `update_shape()` only queues a deferred bake — the
+            // actual ArrayMesh isn't ready until a subsequent main-
+            // loop tick, which doesn't happen inside a headless
+            // single-shot --script invocation. `bake_static_mesh()`
+            // does the same bake synchronously and returns the
+            // ArrayMesh in-line. Same data, just blocks the caller
+            // until the geometry is ready.
+            // CSG bakes are normally deferred via call_deferred, which
+            // never fires in a headless single-shot --script run. The
+            // bound name in ClassDB is `_update_shape` (underscore
+            // prefix — convention for "internal" methods that godot-
+            // cpp's binding generator omits from typed headers).
+            // Calling via Object::call dispatches the bake
+            // synchronously so the root_mesh is ready before we read
+            // it back via bake_static_mesh().
+            csg->call("_update_shape");
+            godot::Ref<godot::Mesh> baked = csg->bake_static_mesh();
+            if (baked.is_valid()) {
+                int surface_count = baked->get_surface_count();
+                godot::String base = csg->get_name();
+                godot::Transform3D xform = csg->get_transform();
+                for (int s = 0; s < surface_count; ++s) {
+                    ::idtx_mesh_t* m = BuildMeshFromSurface(baked, s, base, csg);
+                    if (m == nullptr) continue;
+                    // Bake the CSG node's local transform into the
+                    // vertex positions (CSG meshes are un-skinned,
+                    // so positions can live in scene-local space).
+                    // idtx_mesh doesn't carry a per-mesh xform yet;
+                    // for skinned meshes vertex positions stay in
+                    // mesh-local space because bone transforms
+                    // reproject them.
+                    int32_t vc = idtx_mesh_get_vertex_count(m);
+                    if (vc > 0) {
+                        std::vector<float> pos(static_cast<size_t>(vc) * 3);
+                        idtx_mesh_get_positions(m, pos.data());
+                        for (int32_t v = 0; v < vc; ++v) {
+                            godot::Vector3 p(pos[v*3], pos[v*3+1], pos[v*3+2]);
+                            p = xform.xform(p);
+                            pos[v*3] = p.x;
+                            pos[v*3+1] = p.y;
+                            pos[v*3+2] = p.z;
+                        }
+                        std::vector<float> nrm;
+                        if (idtx_mesh_has_normals(m)) {
+                            nrm.resize(static_cast<size_t>(vc) * 3);
+                            idtx_mesh_get_normals(m, nrm.data());
+                            // Normals rotate by basis only (no
+                            // translation). For non-uniform scale we
+                            // would want the inverse-transpose; CSG
+                            // shapes typically use uniform/no scale.
+                            for (int32_t v = 0; v < vc; ++v) {
+                                godot::Vector3 n(nrm[v*3], nrm[v*3+1], nrm[v*3+2]);
+                                n = xform.basis.xform(n).normalized();
+                                nrm[v*3] = n.x;
+                                nrm[v*3+1] = n.y;
+                                nrm[v*3+2] = n.z;
+                            }
+                        }
+                        std::vector<float> uvs, cols;
+                        if (idtx_mesh_has_uvs(m)) {
+                            uvs.resize(static_cast<size_t>(vc) * 2);
+                            idtx_mesh_get_uvs(m, uvs.data());
+                        }
+                        if (idtx_mesh_has_colors(m)) {
+                            cols.resize(static_cast<size_t>(vc) * 4);
+                            idtx_mesh_get_colors(m, cols.data());
+                        }
+                        idtx_mesh_set_vertices(m, vc, pos.data(),
+                            nrm.empty() ? nullptr : nrm.data(),
+                            uvs.empty() ? nullptr : uvs.data(),
+                            cols.empty() ? nullptr : cols.data());
+                    }
+                    // Material override on the CSG root wins;
+                    // otherwise per-surface material on the baked
+                    // mesh; otherwise a default-initialised
+                    // material picked up by AddOrLookupMaterial.
+                    godot::Ref<godot::Material> mat = csg->get_material_override();
+                    if (mat.is_null()) mat = baked->surface_get_material(s);
+                    int32_t mat_idx = AddOrLookupMaterial(avatar, cache, mat);
+                    idtx_avatar_add_mesh(avatar, m, mat_idx);
+                }
+            }
+            // Don't recurse into a CSG root's children — they're
+            // already baked into the root's output.
+            return;
+        }
+        // Non-root CSG: skip; the root above us baked it.
+        return;
     }
     int n = node->get_child_count();
     for (int i = 0; i < n; ++i) {
