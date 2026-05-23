@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# USD build/cache artifacts
+*.usdc
+generatedSchema.usda
+
+# Build outputs (slangc -> GLSL, CMake, pixi)
+build/
+.pixi/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+pixi-install.log
+lean/.lake/
