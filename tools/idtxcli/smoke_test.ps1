@@ -24,10 +24,12 @@ Copy-Item -Force usd\libs\windows\libidtx_usd.dll $cliDir
 
 $env:PXR_PLUGINPATH_NAME = (Resolve-Path 'thirdparty\openusd-25.11\lib\usd').Path
 
-# usdchecker lives in the with-Python build because the no-Python USD
-# build doesn't include the CLI tools. We use it post-roundtrip to gate
-# the exported .usda against ARKit-relaxed schema validity.
+# usdchecker + usdcat live in the with-Python build because the no-
+# Python USD build doesn't include the CLI tools. usdchecker gates
+# ARKit-relaxed schema validity; usdcat --flatten lets us do a
+# round-trip USD -> USD diff.
 $usdchecker = Resolve-Path 'thirdparty\openusd-25.11-withPython\bin\usdchecker.exe' -ErrorAction SilentlyContinue
+$usdcat     = Resolve-Path 'thirdparty\openusd-25.11-withPython\bin\usdcat.exe'     -ErrorAction SilentlyContinue
 if ($usdchecker) {
     $env:PATH = (Split-Path $usdchecker.Path) + ';' + (Resolve-Path 'thirdparty\openusd-25.11-withPython\lib').Path + ';' + $env:PATH
 }
@@ -65,11 +67,45 @@ foreach ($f in $fixtures) {
         if ($rc3 -ne 0) { $checker_msg = " usdchecker: " + ($out -join '; ') }
     }
 
+    # USD -> USD round-trip diff via usdcat --flatten. Informational
+    # only for now — the openusd-fabric/tests/fixtures set carries
+    # USD-only features the libidtx_core handle model doesn't preserve
+    # (composition arcs, material input connections beyond
+    # UsdPreviewSurface's baseline, V-Sekai-namespace customData not
+    # surfaced through the C ABI, etc). The CHI-251 acceptance
+    # criterion's "empty diff" expectation applies to a CURATED
+    # round-trip fixture corpus, not these authoring fixtures.
+    #
+    # The diff line count is reported so regressions are visible — a
+    # fixture that previously diffed 100 lines suddenly diffing 500
+    # signals something dropped on the floor.
+    $diff_count = 0
+    $diff_msg = ''
+    if ($usdcat) {
+        $usd_back = "$cliDir\${f}_usd_roundtrip.usda"
+        & "$cliDir\idtxcli.exe" usd-to-usd $src $usd_back > $null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $usd_back)) {
+            $flat_src  = "$cliDir\${f}_src.flat.usda"
+            $flat_back = "$cliDir\${f}_back.flat.usda"
+            & $usdcat.Path --flatten -o $flat_src  $src      > $null 2>&1
+            & $usdcat.Path --flatten -o $flat_back $usd_back > $null 2>&1
+            if ((Test-Path $flat_src) -and (Test-Path $flat_back)) {
+                $sa = (Get-Content $flat_src)  | Where-Object { $_ -notmatch '^\s*doc\s*=\s*"' }
+                $sb = (Get-Content $flat_back) | Where-Object { $_ -notmatch '^\s*doc\s*=\s*"' }
+                $diff = Compare-Object $sa $sb
+                if ($diff) {
+                    $diff_count = $diff.Count
+                    $diff_msg = " usd-diff: $diff_count line(s) (informational)"
+                }
+            }
+        }
+    }
+
     $ok = ($rc1 -eq 0) -and ($rc2 -eq 0) -and ($rc3 -eq 0) `
         -and (Test-Path $vrm) -and (Test-Path $back)
     $status = if ($ok) { 'PASS' } else { 'FAIL'; $failed++ }
-    Write-Host ("{0,-28} {1}  usd->vrm rc={2}  vrm->usd rc={3}  usdchecker rc={4}{5}" -f `
-        $f, $status, $rc1, $rc2, $rc3, $checker_msg)
+    Write-Host ("{0,-28} {1}  usd->vrm rc={2}  vrm->usd rc={3}  usdchecker rc={4}{5}{6}" -f `
+        $f, $status, $rc1, $rc2, $rc3, $checker_msg, $diff_msg)
 }
 
 if ($failed -gt 0) {
