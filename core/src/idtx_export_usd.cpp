@@ -331,10 +331,11 @@ static void bind_mesh_to_skeleton(
     auto jw = binding.CreateJointWeightsPrimvar(/*constant=*/false, bpv);
     jw.Set(weights_vt);
 
-    // Identity geomBindTransform — skel-bind-space matches mesh-local
-    // space for the MVP. Avatars that need a non-identity bind matrix
-    // can set it on the idtx_mesh in a future API extension.
-    binding.CreateGeomBindTransformAttr().Set(pxr::GfMatrix4d(1.0));
+    // geomBindTransform — UsdSkel's default is identity, so skip
+    // emitting it. (Earlier we always set the identity matrix
+    // explicitly, but that bloated round-trip diffs against
+    // identity-bind fixtures.) Future API extension can take a
+    // non-identity bind matrix on the idtx_mesh handle if needed.
 }
 
 // Emit a single VSekaiSpringBoneAPI prim from idtx_spring_chain.
@@ -617,7 +618,12 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
                 pxr::UsdPrim mesh_prim = stage->GetPrimAtPath(mp);
                 pxr::UsdShadeMaterial mat = pxr::UsdShadeMaterial::Get(
                     stage, material_paths[mat_index]);
-                pxr::UsdShadeMaterialBindingAPI(mesh_prim).Bind(mat);
+                // Apply the API schema first — UsdShadeMaterialBindingAPI::Bind()
+                // writes the material:binding rel but does NOT add the API to
+                // apiSchemas. Without it usdchecker --arkit=false flags the
+                // material:binding rel as "MissingMaterialBindingAPI".
+                auto binding = pxr::UsdShadeMaterialBindingAPI::Apply(mesh_prim);
+                binding.Bind(mat);
             }
 
             idtx::core::detail::bind_mesh_to_skeleton(

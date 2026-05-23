@@ -97,8 +97,16 @@ foreach ($f in $fixtures) {
             & $usdcat.Path --flatten -o $flat_src  $src      > $null 2>&1
             & $usdcat.Path --flatten -o $flat_back $usd_back > $null 2>&1
             if ((Test-Path $flat_src) -and (Test-Path $flat_back)) {
-                $sa = (Get-Content $flat_src)  | Where-Object { $_ -notmatch '^\s*doc\s*=\s*"' }
-                $sb = (Get-Content $flat_back) | Where-Object { $_ -notmatch '^\s*doc\s*=\s*"' }
+                # Strip USD-machinery noise that flatten injects:
+                #   `doc = "<file path>"`         layer-level input filename
+                #   `string userDocBrief = "..."` schema documentation
+                #                                  auto-injected by usdcat
+                #                                  on flatten depending on
+                #                                  the schema descriptor
+                #                                  files USD found.
+                $strip = '^\s*doc\s*=\s*"|^\s*string userDocBrief = '
+                $sa = (Get-Content $flat_src)  | Where-Object { $_ -notmatch $strip }
+                $sb = (Get-Content $flat_back) | Where-Object { $_ -notmatch $strip }
                 $diff = Compare-Object $sa $sb
                 if ($diff) {
                     $diff_count = $diff.Count

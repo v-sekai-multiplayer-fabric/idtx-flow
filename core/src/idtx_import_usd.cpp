@@ -79,7 +79,22 @@ static idtx_skeleton_t* read_skeleton(pxr::UsdPrim const& skel_prim)
     usd_skel.GetBindTransformsAttr().Get(&bind_transforms);
 
     idtx_skeleton_t* skel = idtx_skeleton_create();
-    idtx_skeleton_set_name(skel, skel_prim.GetName().GetString().c_str());
+    // Recover the idtx_skeleton's name from the parent SkelRoot
+    // (idtx_export_usd emits "<skel_name>_SkelRoot" for the parent).
+    // Falling back to the Skeleton prim's own name when the suffix
+    // pattern doesn't match keeps imports of non-idtx USD files
+    // (Blender / Houdini / Maya exports) working.
+    std::string skel_name = skel_prim.GetName().GetString();
+    pxr::UsdPrim skel_parent = skel_prim.GetParent();
+    if (skel_parent && skel_parent.IsValid()) {
+        std::string parent_name = skel_parent.GetName().GetString();
+        const std::string suffix = "_SkelRoot";
+        if (parent_name.size() > suffix.size()
+            && parent_name.compare(parent_name.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            skel_name = parent_name.substr(0, parent_name.size() - suffix.size());
+        }
+    }
+    idtx_skeleton_set_name(skel, skel_name.c_str());
 
     // joint paths are "a/b/c"; parent of joint i is the joint whose
     // path is i's path minus the trailing /name. Build a map of
@@ -494,6 +509,14 @@ extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const c
         idtx_mesh_t* mesh = idtx::core::detail::read_mesh(prim);
         if (mesh == nullptr) continue;
 
+        // Material binding resolution. Two paths:
+        //   1. ComputeBoundMaterial — requires MaterialBindingAPI to be
+        //      applied on the prim. Works for assets authored through
+        //      UsdShadeMaterialBindingAPI::Bind() (our own exports do
+        //      this implicitly).
+        //   2. Direct material:binding rel lookup — for fixtures and
+        //      third-party USDs that author the rel without applying
+        //      the API explicitly. Common on hand-authored .usda files.
         int32_t mat_index = -1;
         pxr::UsdShadeMaterialBindingAPI binding(prim);
         if (binding) {
@@ -501,6 +524,17 @@ extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const c
             if (bound) {
                 auto it = mat_path_to_index.find(bound.GetPath().GetString());
                 if (it != mat_path_to_index.end()) mat_index = it->second;
+            }
+        }
+        if (mat_index < 0) {
+            pxr::UsdRelationship rel = prim.GetRelationship(pxr::TfToken("material:binding"));
+            if (rel) {
+                pxr::SdfPathVector targets;
+                rel.GetTargets(&targets);
+                if (!targets.empty()) {
+                    auto it = mat_path_to_index.find(targets[0].GetString());
+                    if (it != mat_path_to_index.end()) mat_index = it->second;
+                }
             }
         }
         idtx_avatar_add_mesh(avatar, mesh, mat_index);
