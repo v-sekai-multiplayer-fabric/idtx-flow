@@ -630,11 +630,6 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
     return 0;
 }
 
-extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_vrm(
-    const char* path)
-{
-    (void)path;
-    // TODO(Phase 7.5+): parse GLB, walk nodes/meshes/skins, read
-    // VRMC_vrm extension for humanoid + meta, return populated avatar.
-    return nullptr;
-}
+// idtx_core_import_avatar_from_vrm lives in idtx_vrm_import.cpp — that
+// TU hosts the CGLTF_IMPLEMENTATION and walks the parsed glTF tree
+// into our handles.

@@ -40,6 +40,10 @@ def _build_idtx_core(env):
         "core/include",
         f"{usd_root}/include",
         f"{usd_extension_path}/include",
+        # cgltf single-header glTF 2.0 parser, vendored under libs/cgltf
+        # (MIT). Used by core/src/idtx_vrm_import.cpp for the VRM read
+        # direction.
+        "libs/cgltf",
     ])
 
     core_env.Append(LIBPATH=[
@@ -82,6 +86,7 @@ def _build_idtx_core(env):
         "core/src/idtx_export_usd.cpp",
         "core/src/idtx_import_usd.cpp",
         "core/src/idtx_vrm.cpp",
+        "core/src/idtx_vrm_import.cpp",
         "core/src/vrm_humanoid_bones.cpp",
     ]
 
