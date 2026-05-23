@@ -35,6 +35,20 @@ static void pad_to_4(std::vector<uint8_t>& v, uint8_t pad)
     while ((v.size() % 4) != 0) v.push_back(pad);
 }
 
+// Append `count` bytes from `src` to `bin`, returning the byte offset
+// at which they were written.
+static uint32_t append_to_bin(std::vector<uint8_t>& bin, void const* src, size_t count)
+{
+    uint32_t offset = static_cast<uint32_t>(bin.size());
+    auto const* p = static_cast<uint8_t const*>(src);
+    bin.insert(bin.end(), p, p + count);
+    // 4-byte align inside the BIN chunk — accessor offsets must be
+    // multiples of their component size; padding here keeps subsequent
+    // float/int accessors aligned for free.
+    while ((bin.size() % 4) != 0) bin.push_back(0);
+    return offset;
+}
+
 static bool write_glb(
     std::string const& json,
     std::vector<uint8_t> const& bin,
@@ -82,10 +96,103 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
 {
     if (avatar == nullptr || path == nullptr) return 1;
 
-    // Plan the node table: index 0 is the avatar root; bones (if any
-    // skeleton attached) get sequential indices after it. We need the
-    // bone -> node-index map twice: once to write nodes[].children and
-    // once to write humanBones[boneName].node.
+    // ----- BIN chunk accumulator + accessor/bufferView descriptors -----
+    std::vector<uint8_t> bin;
+
+    struct BufferView { uint32_t byte_offset; uint32_t byte_length; int target; };
+    struct Accessor   { int buffer_view; int component_type; int count;
+                        std::string type; bool has_min_max;
+                        float min3[3]; float max3[3]; };
+
+    std::vector<BufferView> buffer_views;
+    std::vector<Accessor>   accessors;
+
+    // glTF constants
+    constexpr int CT_UINT32  = 5125;
+    constexpr int CT_FLOAT   = 5126;
+    constexpr int TARGET_ARRAY_BUFFER         = 34962;
+    constexpr int TARGET_ELEMENT_ARRAY_BUFFER = 34963;
+
+    // Per-mesh accessor planning. Index into mesh_primitives is the
+    // glTF mesh index; each entry stores accessor indices for its
+    // attributes + indices accessor.
+    struct PrimitivePlan {
+        int positions_accessor = -1;
+        int normals_accessor   = -1;
+        int uvs_accessor       = -1;
+        int indices_accessor   = -1;
+    };
+    int32_t mesh_count = idtx_avatar_get_mesh_count(avatar);
+    std::vector<PrimitivePlan> mesh_primitives(mesh_count);
+
+    for (int32_t mi = 0; mi < mesh_count; ++mi) {
+        auto* mh = idtx_avatar_get_mesh(avatar, mi);
+        if (mh == nullptr) continue;
+        int32_t vc = idtx_mesh_get_vertex_count(mh);
+        int32_t ic = idtx_mesh_get_index_count(mh);
+        if (vc <= 0 || ic <= 0) continue;
+
+        // positions
+        std::vector<float> pos(static_cast<size_t>(vc) * 3);
+        idtx_mesh_get_positions(mh, pos.data());
+        uint32_t off = idtx::core::detail::append_to_bin(bin, pos.data(), pos.size() * sizeof(float));
+        Accessor a;
+        a.buffer_view = static_cast<int>(buffer_views.size());
+        a.component_type = CT_FLOAT;
+        a.count = vc;
+        a.type = "VEC3";
+        a.has_min_max = true;
+        a.min3[0] = a.min3[1] = a.min3[2] =  1e30f;
+        a.max3[0] = a.max3[1] = a.max3[2] = -1e30f;
+        for (int32_t v = 0; v < vc; ++v) {
+            for (int c = 0; c < 3; ++c) {
+                float x = pos[v * 3 + c];
+                if (x < a.min3[c]) a.min3[c] = x;
+                if (x > a.max3[c]) a.max3[c] = x;
+            }
+        }
+        buffer_views.push_back({off, static_cast<uint32_t>(pos.size() * sizeof(float)), TARGET_ARRAY_BUFFER});
+        mesh_primitives[mi].positions_accessor = static_cast<int>(accessors.size());
+        accessors.push_back(a);
+
+        // normals (optional)
+        if (idtx_mesh_has_normals(mh)) {
+            std::vector<float> nrm(static_cast<size_t>(vc) * 3);
+            idtx_mesh_get_normals(mh, nrm.data());
+            uint32_t no = idtx::core::detail::append_to_bin(bin, nrm.data(), nrm.size() * sizeof(float));
+            Accessor an; an.buffer_view = static_cast<int>(buffer_views.size());
+            an.component_type = CT_FLOAT; an.count = vc; an.type = "VEC3"; an.has_min_max = false;
+            buffer_views.push_back({no, static_cast<uint32_t>(nrm.size() * sizeof(float)), TARGET_ARRAY_BUFFER});
+            mesh_primitives[mi].normals_accessor = static_cast<int>(accessors.size());
+            accessors.push_back(an);
+        }
+
+        // uvs (optional)
+        if (idtx_mesh_has_uvs(mh)) {
+            std::vector<float> uvs(static_cast<size_t>(vc) * 2);
+            idtx_mesh_get_uvs(mh, uvs.data());
+            uint32_t uo = idtx::core::detail::append_to_bin(bin, uvs.data(), uvs.size() * sizeof(float));
+            Accessor au; au.buffer_view = static_cast<int>(buffer_views.size());
+            au.component_type = CT_FLOAT; au.count = vc; au.type = "VEC2"; au.has_min_max = false;
+            buffer_views.push_back({uo, static_cast<uint32_t>(uvs.size() * sizeof(float)), TARGET_ARRAY_BUFFER});
+            mesh_primitives[mi].uvs_accessor = static_cast<int>(accessors.size());
+            accessors.push_back(au);
+        }
+
+        // indices (uint32 — glTF doesn't have uint16/uint32 ambiguity
+        // when we always pick uint32 for the export).
+        std::vector<int32_t> idx(static_cast<size_t>(ic));
+        idtx_mesh_get_indices(mh, idx.data());
+        std::vector<uint32_t> idxu(idx.begin(), idx.end());
+        uint32_t io = idtx::core::detail::append_to_bin(bin, idxu.data(), idxu.size() * sizeof(uint32_t));
+        Accessor ai; ai.buffer_view = static_cast<int>(buffer_views.size());
+        ai.component_type = CT_UINT32; ai.count = ic; ai.type = "SCALAR"; ai.has_min_max = false;
+        buffer_views.push_back({io, static_cast<uint32_t>(idxu.size() * sizeof(uint32_t)), TARGET_ELEMENT_ARRAY_BUFFER});
+        mesh_primitives[mi].indices_accessor = static_cast<int>(accessors.size());
+        accessors.push_back(ai);
+    }
+
+    // ---------------------------------------------------------------
     auto* skel = idtx_avatar_get_skeleton(avatar);
     int32_t bone_count = (skel != nullptr) ? idtx_skeleton_get_bone_count(skel) : 0;
     int32_t root_node_index = 0;
@@ -164,6 +271,79 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             }
         j.end_array();
 
+        // meshes
+        if (!mesh_primitives.empty()) {
+            j.key("meshes"); j.begin_array();
+            for (int32_t mi = 0; mi < mesh_count; ++mi) {
+                auto const& mp = mesh_primitives[mi];
+                if (mp.positions_accessor < 0) continue;
+                j.begin_object();
+                    j.key("name");
+                    auto* mh = idtx_avatar_get_mesh(avatar, mi);
+                    j.string(mh != nullptr ? idtx_mesh_get_name(mh) : "");
+                    j.key("primitives"); j.begin_array();
+                        j.begin_object();
+                            j.key("attributes"); j.begin_object();
+                                j.key("POSITION"); j.integer(mp.positions_accessor);
+                                if (mp.normals_accessor >= 0) {
+                                    j.key("NORMAL"); j.integer(mp.normals_accessor);
+                                }
+                                if (mp.uvs_accessor >= 0) {
+                                    j.key("TEXCOORD_0"); j.integer(mp.uvs_accessor);
+                                }
+                            j.end_object();
+                            if (mp.indices_accessor >= 0) {
+                                j.key("indices"); j.integer(mp.indices_accessor);
+                            }
+                            j.key("mode"); j.integer(4);  // TRIANGLES
+                        j.end_object();
+                    j.end_array();
+                j.end_object();
+            }
+            j.end_array();
+        }
+
+        // accessors
+        if (!accessors.empty()) {
+            j.key("accessors"); j.begin_array();
+            for (auto const& a : accessors) {
+                j.begin_object();
+                    j.key("bufferView");    j.integer(a.buffer_view);
+                    j.key("componentType"); j.integer(a.component_type);
+                    j.key("count");         j.integer(a.count);
+                    j.key("type");          j.string(a.type);
+                    if (a.has_min_max) {
+                        j.key("min"); j.float_array(a.min3, 3);
+                        j.key("max"); j.float_array(a.max3, 3);
+                    }
+                j.end_object();
+            }
+            j.end_array();
+        }
+
+        // bufferViews
+        if (!buffer_views.empty()) {
+            j.key("bufferViews"); j.begin_array();
+            for (auto const& bv : buffer_views) {
+                j.begin_object();
+                    j.key("buffer");     j.integer(0);
+                    j.key("byteOffset"); j.integer(bv.byte_offset);
+                    j.key("byteLength"); j.integer(bv.byte_length);
+                    j.key("target");     j.integer(bv.target);
+                j.end_object();
+            }
+            j.end_array();
+        }
+
+        // buffers — single embedded BIN chunk if any geometry data was written
+        if (!bin.empty()) {
+            j.key("buffers"); j.begin_array();
+                j.begin_object();
+                    j.key("byteLength"); j.integer(static_cast<int64_t>(bin.size()));
+                j.end_object();
+            j.end_array();
+        }
+
         j.key("extensions"); j.begin_object();
             j.key("VRMC_vrm"); j.begin_object();
                 j.key("specVersion"); j.string("1.0");
@@ -187,8 +367,7 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
         j.end_object();
     j.end_object();
 
-    std::vector<uint8_t> empty_bin;
-    if (!idtx::core::detail::write_glb(j.str(), empty_bin, path)) return 3;
+    if (!idtx::core::detail::write_glb(j.str(), bin, path)) return 3;
     return 0;
 }
 
