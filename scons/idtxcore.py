@@ -27,12 +27,30 @@ def _build_idtx_core(env):
     build_target = env["target"]
     build_arch = env["arch"]
 
+    openusd_version = env.get('openusd_version', '')
+    usd_root = f"thirdparty/openusd-{openusd_version}"
+    usd_extension_path = "usd"
+
     core_env = env.Clone()
 
-    # Include paths — core depends on libidtx_usd (USD schema layer) but
-    # NOT on godot-cpp. Adding godot-cpp here would defeat the purpose.
+    # Include paths — core depends on USD (for stage I/O + schemas) and
+    # the libidtx_usd schema layer, but NOT on godot-cpp. Adding godot
+    # here would defeat the purpose of the carve-out.
     core_env.Append(CPPPATH=[
         "core/include",
+        f"{usd_root}/include",
+        f"{usd_extension_path}/include",
+    ])
+
+    core_env.Append(LIBPATH=[
+        f"{usd_root}/lib",
+        f"{usd_extension_path}/libs/{platform_name}",
+    ])
+
+    core_env.Append(LIBS=[
+        "usd_ms",
+        "tbb12" if platform_name == "windows" else "tbb.12",
+        "libidtx_usd",
     ])
 
     # /FS lets parallel cl.exe invocations share the PDB writer; /Z7
@@ -58,6 +76,7 @@ def _build_idtx_core(env):
         "core/src/idtx_material.cpp",
         "core/src/idtx_avatar.cpp",
         "core/src/string_utils.cpp",
+        "core/src/usd_helpers.cpp",
     ]
 
     library_name = f"libidtx_core.{platform_name}.{build_arch}"
