@@ -9,6 +9,7 @@
 //   idtxcli vrm-to-usd <in.vrm>   <out.usda>
 //   idtxcli usd-to-usd <in.usda>  <out.usda>     (round-trip)
 //   idtxcli vrm-to-vrm <in.vrm>   <out.vrm>      (round-trip)
+//   idtxcli reconstruct-quads <in.usda> <out.usda> [planarity_deg]
 //   idtxcli version
 //
 // Returns 0 on success, non-zero on failure.
@@ -16,6 +17,7 @@
 #include "idtx_core/idtx_core.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -28,8 +30,9 @@ static int usage(const char* arg0)
         "  %s vrm-to-usd <in.vrm>  <out.usda>\n"
         "  %s usd-to-usd <in.usda> <out.usda>   (round-trip)\n"
         "  %s vrm-to-vrm <in.vrm>  <out.vrm>    (round-trip)\n"
+        "  %s reconstruct-quads <in.usda> <out.usda> [planarity_deg]\n"
         "  %s version\n",
-        arg0, arg0, arg0, arg0, arg0);
+        arg0, arg0, arg0, arg0, arg0, arg0);
     return 2;
 }
 
@@ -89,6 +92,34 @@ int main(int argc, char** argv)
             &idtx_core_import_avatar_from_vrm,
             &idtx_core_export_avatar_to_vrm,
             argv[2], argv[3], "vrm-to-vrm");
+    }
+    if (cmd == "reconstruct-quads") {
+        // USD -> idtx_avatar -> run tris-to-quads per mesh -> USD.
+        float planarity = (argc >= 5) ? std::atof(argv[4]) : 5.0f;
+        idtx_avatar_t* a = idtx_core_import_avatar_from_usd(argv[2]);
+        if (a == nullptr) {
+            std::fprintf(stderr, "reconstruct-quads: failed to import %s\n", argv[2]);
+            return 3;
+        }
+        int32_t total_quads = 0;
+        int32_t mesh_count  = idtx_avatar_get_mesh_count(a);
+        for (int32_t i = 0; i < mesh_count; ++i) {
+            idtx_mesh_t* m = idtx_avatar_get_mesh(a, i);
+            int32_t n = idtx_mesh_reconstruct_quads(m, planarity);
+            if (n > 0) total_quads += n;
+        }
+        int32_t rc = idtx_core_export_avatar_to_usd(a, argv[3]);
+        idtx_avatar_destroy(a);
+        if (rc != 0) {
+            std::fprintf(stderr,
+                "reconstruct-quads: export to %s failed (rc=%d)\n",
+                argv[3], rc);
+            return 4;
+        }
+        std::fprintf(stdout,
+            "reconstruct-quads: %s -> %s ok (%d quad(s) formed across %d mesh(es))\n",
+            argv[2], argv[3], total_quads, mesh_count);
+        return 0;
     }
     return usage(argv[0]);
 }

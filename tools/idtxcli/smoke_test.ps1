@@ -158,3 +158,23 @@ if ($failed -gt 0) {
     exit 1
 }
 Write-Host "all fixtures round-tripped successfully"
+
+# CHI-253 acceptance gate: tris-to-quads reconstruction on the
+# canonical cube fixture must collapse all 12 triangles to 6 quads.
+# Greedy mutual-best matching: planar faces with perfectly coplanar
+# triangle pairs always form a quad.
+Write-Host ""
+Write-Host "CHI-253 tris-to-quads reconstruction gate:"
+$rec_out = "$cliDir\canonical_quads.usda"
+& "$cliDir\idtxcli.exe" reconstruct-quads `
+    "openusd-fabric\tests\fixtures\roundtrip_canonical.usda" $rec_out 5.0 | Out-Host
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $rec_out)) {
+    Write-Error "reconstruct-quads failed on roundtrip_canonical"
+    exit 1
+}
+$content = Get-Content -Raw $rec_out
+if ($content -notmatch '\[4, 4, 4, 4, 4, 4\]') {
+    Write-Error "reconstruct-quads did not collapse cube to 6 quads — output: $rec_out"
+    exit 1
+}
+Write-Host "  canonical cube -> 6 quads PASS"
