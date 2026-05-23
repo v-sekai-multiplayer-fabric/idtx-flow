@@ -22,6 +22,10 @@
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdGeom/xformOp.h>
+#include <pxr/usd/usdShade/material.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
+#include <pxr/usd/usdShade/shader.h>
+#include <pxr/usd/usdShade/tokens.h>
 #include <pxr/usd/usdSkel/root.h>
 #include <pxr/usd/usdSkel/skeleton.h>
 
@@ -204,6 +208,65 @@ static pxr::SdfPath emit_mesh(
     return mesh_path;
 }
 
+// Emit a UsdShadeMaterial under `parent_path` from idtx_material_t.
+// PBR materials get a UsdPreviewSurface shader subtree; MToon-flagged
+// materials get the same surface plus the VSekaiMToonAPI applied
+// schema so downstream code (or a future VRM serializer) can find the
+// MToon parameters.
+static pxr::SdfPath emit_material(
+    pxr::UsdStageRefPtr const& stage,
+    pxr::SdfPath const& parent_path,
+    idtx_material_t const* mat,
+    std::set<std::string>& siblings)
+{
+    if (mat == nullptr) return pxr::SdfPath();
+    std::string desired = sanitise_prim_name(idtx_material_get_name(mat));
+    if (desired.empty()) desired = "Material";
+    pxr::SdfPath mat_path = unique_child_path(parent_path, desired, siblings);
+    pxr::UsdShadeMaterial usd_mat = pxr::UsdShadeMaterial::Define(stage, mat_path);
+
+    // UsdPreviewSurface shader subprim
+    pxr::SdfPath shader_path = mat_path.AppendChild(pxr::TfToken("PreviewSurface"));
+    pxr::UsdShadeShader shader = pxr::UsdShadeShader::Define(stage, shader_path);
+    shader.CreateIdAttr().Set(pxr::TfToken("UsdPreviewSurface"));
+
+    float rgba[4]; idtx_material_get_base_color(mat, rgba);
+    shader.CreateInput(pxr::TfToken("diffuseColor"), pxr::SdfValueTypeNames->Color3f)
+          .Set(pxr::GfVec3f(rgba[0], rgba[1], rgba[2]));
+    shader.CreateInput(pxr::TfToken("opacity"), pxr::SdfValueTypeNames->Float)
+          .Set(rgba[3]);
+    shader.CreateInput(pxr::TfToken("metallic"), pxr::SdfValueTypeNames->Float)
+          .Set(idtx_material_get_metallic(mat));
+    shader.CreateInput(pxr::TfToken("roughness"), pxr::SdfValueTypeNames->Float)
+          .Set(idtx_material_get_roughness(mat));
+
+    // Connect shader surface output to material
+    pxr::UsdShadeOutput surf_out = shader.CreateOutput(
+        pxr::TfToken("surface"), pxr::SdfValueTypeNames->Token);
+    usd_mat.CreateSurfaceOutput().ConnectToSource(surf_out);
+
+    // MToon overlay — apply VSekaiMToonAPI applied schema + write the
+    // v_sekai:mtoon:* attributes for round-tripping.
+    if (idtx_material_is_mtoon(mat)) {
+        pxr::UsdPrim prim = usd_mat.GetPrim();
+        prim.ApplyAPI(pxr::TfToken("VSekaiMToonAPI"));
+
+        float shade[3]; idtx_material_get_mtoon_shade_color(mat, shade);
+        float rim[3];   idtx_material_get_mtoon_rim_color(mat, rim);
+        prim.CreateAttribute(
+            pxr::TfToken("v_sekai:mtoon:shadeColor"),
+            pxr::SdfValueTypeNames->Color3f).Set(pxr::GfVec3f(shade[0], shade[1], shade[2]));
+        prim.CreateAttribute(
+            pxr::TfToken("v_sekai:mtoon:rimColor"),
+            pxr::SdfValueTypeNames->Color3f).Set(pxr::GfVec3f(rim[0], rim[1], rim[2]));
+        prim.CreateAttribute(
+            pxr::TfToken("v_sekai:mtoon:outlineWidth"),
+            pxr::SdfValueTypeNames->Float).Set(idtx_material_get_mtoon_outline_width(mat));
+    }
+
+    return mat_path;
+}
+
 }  // namespace idtx::core::detail
 
 extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
@@ -225,12 +288,35 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
     idtx::core::detail::emit_skeleton(
         stage, root_path, idtx_avatar_get_skeleton(avatar));
 
+    // Materials live in a scope so they can be referenced by mesh
+    // binding by path. Emit them first, then meshes pick them up.
+    std::vector<pxr::SdfPath> material_paths;
+    {
+        std::set<std::string> mat_siblings;
+        int32_t mat_count = idtx_avatar_get_material_count(avatar);
+        material_paths.reserve(static_cast<size_t>(mat_count));
+        for (int32_t i = 0; i < mat_count; ++i) {
+            material_paths.push_back(
+                idtx::core::detail::emit_material(
+                    stage, root_path, idtx_avatar_get_material(avatar, i), mat_siblings));
+        }
+    }
+
     {
         std::set<std::string> mesh_siblings;
         int32_t mesh_count = idtx_avatar_get_mesh_count(avatar);
         for (int32_t i = 0; i < mesh_count; ++i) {
-            idtx::core::detail::emit_mesh(
+            pxr::SdfPath mp = idtx::core::detail::emit_mesh(
                 stage, root_path, idtx_avatar_get_mesh(avatar, i), mesh_siblings);
+            if (mp.IsEmpty()) continue;
+            int32_t mat_index = idtx_avatar_get_mesh_material(avatar, i);
+            if (mat_index >= 0 && mat_index < static_cast<int32_t>(material_paths.size())
+                && !material_paths[mat_index].IsEmpty()) {
+                pxr::UsdPrim mesh_prim = stage->GetPrimAtPath(mp);
+                pxr::UsdShadeMaterial mat = pxr::UsdShadeMaterial::Get(
+                    stage, material_paths[mat_index]);
+                pxr::UsdShadeMaterialBindingAPI(mesh_prim).Bind(mat);
+            }
         }
     }
 
