@@ -26,6 +26,7 @@
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
 #include <pxr/usd/usdShade/tokens.h>
+#include <pxr/usd/usdGeom/scope.h>
 #include <pxr/usd/usdSkel/bindingAPI.h>
 #include <pxr/usd/usdSkel/root.h>
 #include <pxr/usd/usdSkel/skeleton.h>
@@ -313,6 +314,100 @@ static void bind_mesh_to_skeleton(
     binding.CreateGeomBindTransformAttr().Set(pxr::GfMatrix4d(1.0));
 }
 
+// Emit a single VSekaiSpringBoneAPI prim from idtx_spring_chain.
+static void emit_spring_chain(
+    pxr::UsdStageRefPtr const& stage,
+    pxr::SdfPath const& parent_path,
+    idtx_spring_chain_t const* chain,
+    std::set<std::string>& siblings)
+{
+    if (chain == nullptr) return;
+    std::string desired = sanitise_prim_name(idtx_spring_chain_get_name(chain));
+    if (desired.empty()) desired = "Chain";
+    pxr::SdfPath p = unique_child_path(parent_path, desired, siblings);
+    auto xf = pxr::UsdGeomXform::Define(stage, p);
+    pxr::UsdPrim prim = xf.GetPrim();
+    prim.ApplyAPI(pxr::TfToken("VSekaiSpringBoneAPI"));
+
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:stiffness"),
+        pxr::SdfValueTypeNames->Float).Set(idtx_spring_chain_get_stiffness(chain));
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:drag"),
+        pxr::SdfValueTypeNames->Float).Set(idtx_spring_chain_get_drag(chain));
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:gravityPower"),
+        pxr::SdfValueTypeNames->Float).Set(idtx_spring_chain_get_gravity_power(chain));
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:hitRadius"),
+        pxr::SdfValueTypeNames->Float).Set(idtx_spring_chain_get_hit_radius(chain));
+
+    float gdir[3]; idtx_spring_chain_get_gravity_dir(chain, gdir);
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:gravityDir"),
+        pxr::SdfValueTypeNames->Float3).Set(pxr::GfVec3f(gdir[0], gdir[1], gdir[2]));
+
+    // Joint references stored as a flat int[] of bone indices.
+    int32_t jc = idtx_spring_chain_get_joint_count(chain);
+    pxr::VtArray<int> joints; joints.reserve(jc);
+    for (int32_t j = 0; j < jc; ++j) joints.push_back(idtx_spring_chain_get_joint(chain, j));
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:joints"),
+        pxr::SdfValueTypeNames->IntArray).Set(joints);
+
+    // Collider references — flat int[] of collider indices.
+    int32_t cc = idtx_spring_chain_get_collider_count(chain);
+    if (cc > 0) {
+        pxr::VtArray<int> cols; cols.reserve(cc);
+        for (int32_t c = 0; c < cc; ++c) cols.push_back(idtx_spring_chain_get_collider(chain, c));
+        prim.CreateAttribute(
+            pxr::TfToken("v_sekai:springBone:colliders"),
+            pxr::SdfValueTypeNames->IntArray).Set(cols);
+    }
+}
+
+// Emit a single VSekaiSpringBoneColliderAPI prim from idtx_spring_collider.
+static void emit_spring_collider(
+    pxr::UsdStageRefPtr const& stage,
+    pxr::SdfPath const& parent_path,
+    idtx_spring_collider_t const* col,
+    std::set<std::string>& siblings)
+{
+    if (col == nullptr) return;
+    std::string desired = sanitise_prim_name(idtx_spring_collider_get_name(col));
+    if (desired.empty()) desired = "Collider";
+    pxr::SdfPath p = unique_child_path(parent_path, desired, siblings);
+    auto xf = pxr::UsdGeomXform::Define(stage, p);
+    pxr::UsdPrim prim = xf.GetPrim();
+    prim.ApplyAPI(pxr::TfToken("VSekaiSpringBoneColliderAPI"));
+
+    idtx_collider_shape_t shape = idtx_spring_collider_get_shape(col);
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:collider:shape"),
+        pxr::SdfValueTypeNames->Token).Set(
+            shape == IDTX_COLLIDER_CAPSULE ? pxr::TfToken("capsule") : pxr::TfToken("sphere"));
+
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:collider:attachedBone"),
+        pxr::SdfValueTypeNames->Int).Set(idtx_spring_collider_get_attached_bone(col));
+
+    float off[3]; idtx_spring_collider_get_offset(col, off);
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:collider:offset"),
+        pxr::SdfValueTypeNames->Float3).Set(pxr::GfVec3f(off[0], off[1], off[2]));
+
+    prim.CreateAttribute(
+        pxr::TfToken("v_sekai:springBone:collider:radius"),
+        pxr::SdfValueTypeNames->Float).Set(idtx_spring_collider_get_radius(col));
+
+    if (shape == IDTX_COLLIDER_CAPSULE) {
+        float tail[3]; idtx_spring_collider_get_tail(col, tail);
+        prim.CreateAttribute(
+            pxr::TfToken("v_sekai:springBone:collider:tail"),
+            pxr::SdfValueTypeNames->Float3).Set(pxr::GfVec3f(tail[0], tail[1], tail[2]));
+    }
+}
+
 }  // namespace idtx::core::detail
 
 extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
@@ -369,6 +464,26 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
 
             idtx::core::detail::bind_mesh_to_skeleton(
                 stage, mp, skel_path, idtx_avatar_get_mesh(avatar, i));
+        }
+    }
+
+    // Spring bones — chains + colliders inside a single Scope so the
+    // VRMC_springBone hierarchy stays grouped under the avatar root.
+    int32_t chain_count    = idtx_avatar_get_spring_chain_count(avatar);
+    int32_t collider_count = idtx_avatar_get_spring_collider_count(avatar);
+    if (chain_count > 0 || collider_count > 0) {
+        pxr::SdfPath spring_root = root_path.AppendChild(pxr::TfToken("SpringBones"));
+        pxr::UsdGeomScope::Define(stage, spring_root);
+
+        std::set<std::string> chain_siblings;
+        for (int32_t i = 0; i < chain_count; ++i) {
+            idtx::core::detail::emit_spring_chain(
+                stage, spring_root, idtx_avatar_get_spring_chain(avatar, i), chain_siblings);
+        }
+        std::set<std::string> col_siblings;
+        for (int32_t i = 0; i < collider_count; ++i) {
+            idtx::core::detail::emit_spring_collider(
+                stage, spring_root, idtx_avatar_get_spring_collider(avatar, i), col_siblings);
         }
     }
 
