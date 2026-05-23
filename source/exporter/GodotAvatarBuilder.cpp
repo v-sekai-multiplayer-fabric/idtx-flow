@@ -8,8 +8,13 @@
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/skeleton3d.hpp>
+#include <godot_cpp/classes/spring_bone_collision3d.hpp>
+#include <godot_cpp/classes/spring_bone_collision_capsule3d.hpp>
+#include <godot_cpp/classes/spring_bone_collision_sphere3d.hpp>
+#include <godot_cpp/classes/spring_bone_simulator3d.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/core/object.hpp>
+#include <godot_cpp/variant/node_path.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/packed_color_array.hpp>
@@ -20,6 +25,7 @@
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 
+#include <unordered_map>
 #include <vector>
 
 namespace idtxflow::exporter
@@ -242,6 +248,154 @@ static int32_t AddOrLookupMaterial(
     return idx;
 }
 
+// Resolve a Skeleton3D bone name to its idtx_skeleton bone index.
+// The walker uses bone *order in Skeleton3D* as the avatar's idtx
+// bone order (see BuildSkeleton), so a direct name lookup is fine.
+static int32_t BoneIndexFromName(godot::Skeleton3D* skel, godot::String const& name)
+{
+    if (skel == nullptr) return -1;
+    int n = skel->get_bone_count();
+    for (int i = 0; i < n; ++i) {
+        if (skel->get_bone_name(i) == name) return i;
+    }
+    return -1;
+}
+
+// Pre-walk all SpringBoneCollision3D nodes anywhere under the avatar
+// root, building a Node* -> idtx collider index map. We register every
+// collision node up-front so a chain can reference any of them by
+// NodePath, regardless of where it lives in the scene tree.
+static void CollectColliders(
+    godot::Node* node,
+    ::idtx_avatar_t* avatar,
+    godot::Skeleton3D* skel,
+    std::unordered_map<godot::SpringBoneCollision3D*, int32_t>& out)
+{
+    if (node == nullptr) return;
+    if (auto* col = godot::Object::cast_to<godot::SpringBoneCollision3D>(node)) {
+        ::idtx_spring_collider_t* h = ::idtx_spring_collider_create();
+        idtx_spring_collider_set_name(h, godot::String(col->get_name()).utf8().get_data());
+        idtx_spring_collider_set_attached_bone(h,
+            BoneIndexFromName(skel, col->get_bone_name()));
+
+        godot::Vector3 off = col->get_position_offset();
+        idtx_spring_collider_set_offset(h, off.x, off.y, off.z);
+
+        if (auto* sph = godot::Object::cast_to<godot::SpringBoneCollisionSphere3D>(col)) {
+            idtx_spring_collider_set_shape(h, IDTX_COLLIDER_SPHERE);
+            idtx_spring_collider_set_radius(h, sph->get_radius());
+        } else if (auto* cap = godot::Object::cast_to<godot::SpringBoneCollisionCapsule3D>(col)) {
+            idtx_spring_collider_set_shape(h, IDTX_COLLIDER_CAPSULE);
+            idtx_spring_collider_set_radius(h, cap->get_radius());
+            // Capsule "tail" in VRMC_springBone is the line-segment end.
+            // Godot's SpringBoneCollisionCapsule3D stores the segment
+            // along local +Y of length `height`, so tail = offset + (0, height, 0).
+            float h_v = cap->get_height();
+            idtx_spring_collider_set_tail(h, off.x, off.y + h_v, off.z);
+        } else {
+            // Plane / other shapes: not directly representable in VRMC's
+            // sphere|capsule model. Fall through to a sphere with radius 0
+            // so the round-trip path still produces a slot.
+            idtx_spring_collider_set_shape(h, IDTX_COLLIDER_SPHERE);
+            idtx_spring_collider_set_radius(h, 0.0f);
+        }
+        int32_t idx = idtx_avatar_add_spring_collider(avatar, h);
+        out[col] = idx;
+    }
+    int n = node->get_child_count();
+    for (int i = 0; i < n; ++i) {
+        CollectColliders(node->get_child(i), avatar, skel, out);
+    }
+}
+
+// Walk a SpringBoneSimulator3D node and emit one idtx_spring_chain per
+// setting. Joint bone names map to skeleton bone indices; per-setting
+// dynamics (stiffness / drag / gravity) get copied via Godot's setting-
+// level getters (which return the value the joints inherit when
+// individual_config is off — fine for the MVP).
+static void HarvestSpringSimulator(
+    godot::SpringBoneSimulator3D* sim,
+    ::idtx_avatar_t* avatar,
+    godot::Skeleton3D* skel,
+    godot::Node* root,
+    std::unordered_map<godot::SpringBoneCollision3D*, int32_t> const& collider_map)
+{
+    if (sim == nullptr || skel == nullptr) return;
+    int setting_count = sim->get_setting_count();
+    for (int s = 0; s < setting_count; ++s) {
+        ::idtx_spring_chain_t* chain = ::idtx_spring_chain_create();
+        godot::String name = godot::String(sim->get_name()) + godot::String("_") + godot::String::num_int64(s);
+        idtx_spring_chain_set_name(chain, name.utf8().get_data());
+
+        // Joint bone indices — drop joints whose bone isn't in the skeleton.
+        std::vector<int32_t> bone_idxs;
+        int jc = sim->get_joint_count(s);
+        for (int j = 0; j < jc; ++j) {
+            godot::String bone_name = sim->get_joint_bone_name(s, j);
+            int32_t bi = BoneIndexFromName(skel, bone_name);
+            if (bi >= 0) bone_idxs.push_back(bi);
+        }
+        if (!bone_idxs.empty()) {
+            idtx_spring_chain_set_joints(chain,
+                static_cast<int32_t>(bone_idxs.size()), bone_idxs.data());
+        }
+
+        // Dynamics — pull from the setting-level getters. When the user
+        // enabled per-joint config, joints[0]'s values land here via
+        // Godot's API surface; close enough for the round trip.
+        float stiff = sim->get_stiffness(s);
+        float drag  = sim->get_drag(s);
+        float grav  = sim->get_gravity(s);
+        float radius = sim->get_radius(s);
+        idtx_spring_chain_set_dynamics(chain, stiff, drag, grav, radius);
+
+        // gravity_direction has no getter on the simulator-wide API, so
+        // we sample joint[0]'s gravity_direction via the per-joint getter
+        // when available — defaults to (0, -1, 0) otherwise. Godot 4.x's
+        // SpringBoneSimulator3D doesn't expose a get_joint_gravity_direction,
+        // so we leave the idtx default in place.
+        // idtx_spring_chain_set_gravity_dir(chain, 0, -1, 0);  // (idtx default)
+
+        // Collider references — resolve each collision NodePath to a
+        // SpringBoneCollision3D pointer, then look up the registered
+        // collider index.
+        int cc = sim->get_collision_count(s);
+        for (int c = 0; c < cc; ++c) {
+            godot::NodePath path = sim->get_collision_path(s, c);
+            if (path.is_empty()) continue;
+            godot::Node* resolved = sim->get_node_or_null(path);
+            if (resolved == nullptr && root != nullptr) {
+                resolved = root->get_node_or_null(path);
+            }
+            if (auto* col = godot::Object::cast_to<godot::SpringBoneCollision3D>(resolved)) {
+                auto it = collider_map.find(col);
+                if (it != collider_map.end()) {
+                    idtx_spring_chain_add_collider(chain, it->second);
+                }
+            }
+        }
+        idtx_avatar_add_spring_chain(avatar, chain);
+    }
+}
+
+// Recursive descendant scan for SpringBoneSimulator3D nodes.
+static void CollectSpringSimulators(
+    godot::Node* node,
+    ::idtx_avatar_t* avatar,
+    godot::Skeleton3D* skel,
+    godot::Node* root,
+    std::unordered_map<godot::SpringBoneCollision3D*, int32_t> const& collider_map)
+{
+    if (node == nullptr) return;
+    if (auto* sim = godot::Object::cast_to<godot::SpringBoneSimulator3D>(node)) {
+        HarvestSpringSimulator(sim, avatar, skel, root, collider_map);
+    }
+    int n = node->get_child_count();
+    for (int i = 0; i < n; ++i) {
+        CollectSpringSimulators(node->get_child(i), avatar, skel, root, collider_map);
+    }
+}
+
 static void CollectMeshes(
     godot::Node* node,
     ::idtx_avatar_t* avatar,
@@ -280,12 +434,21 @@ static void CollectMeshes(
     GodotTransformToFloat16(root->get_transform(), root_xform);
     idtx_avatar_set_root_transform(avatar, root_xform);
 
-    if (auto* skel = FindFirstSkeleton(root)) {
-        idtx_avatar_set_skeleton(avatar, BuildSkeleton(skel));
+    godot::Skeleton3D* found_skel = FindFirstSkeleton(root);
+    if (found_skel != nullptr) {
+        idtx_avatar_set_skeleton(avatar, BuildSkeleton(found_skel));
     }
 
     MaterialCache cache;
     CollectMeshes(root, avatar, cache);
+
+    // Spring bones — register colliders first so chain.collider_path
+    // references resolve to indices; then walk simulators.
+    if (found_skel != nullptr) {
+        std::unordered_map<godot::SpringBoneCollision3D*, int32_t> collider_map;
+        CollectColliders(root, avatar, found_skel, collider_map);
+        CollectSpringSimulators(root, avatar, found_skel, root, collider_map);
+    }
 
     return avatar;
 }
