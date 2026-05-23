@@ -2,3 +2,4 @@
 	path = libs/lemon
 	url = https://github.com/cgg-bern/lemon
 	branch = cgg
+	ignore = untracked

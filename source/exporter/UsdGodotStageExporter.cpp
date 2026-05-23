@@ -38,10 +38,12 @@
 #include <lemon/smart_graph.h>
 #include <lemon/matching.h>
 
-#include <idtxflow/logging.h>
+#include <idtxflow/utils/Logger.h>
 
 namespace idtxflow::exporter
 {
+    IDTX_LOG_CATEGORY("UsdGodotStageExporter")
+
     pxr::GfMatrix4d GodotTransformToUsdMatrix(godot::Transform3D const& t)
     {
         // Godot Transform3D is row-major basis + origin; USD GfMatrix4d

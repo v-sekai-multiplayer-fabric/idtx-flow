@@ -41,7 +41,7 @@ def _build_ext_bootstrap_lib(env):
         bootstrap_env.Append(CXXFLAGS=['/EHsc', '/GR', '/std:c++20'])
         bootstrap_env.Append(CPPDEFINES=["NOMINMAX", "WIN32_LEAN_AND_MEAN"])
         if build_target in ["editor", "template_debug"]:
-            bootstrap_env.Append(CCFLAGS=["/Zi", "/Od", "/MT"])
+            bootstrap_env.Append(CCFLAGS=["/Z7", "/Od", "/MT"])
         else:
             bootstrap_env.Append(CCFLAGS=["/O2", "/MT"])
     else:

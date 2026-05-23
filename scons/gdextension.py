@@ -71,7 +71,10 @@ def _build_extension(env):
         f"{usd_extension_path}/include",
         # LEMON (cgg-bern/lemon @ cgg) — vendored as a submodule under
         # libs/lemon for the CHI-253 tris-to-quads max-weight matching
-        # in source/exporter/UsdGodotStageExporter.cpp.
+        # in source/exporter/UsdGodotStageExporter.cpp. libs/lemon-config
+        # ships our hand-written lemon/config.h (the upstream one is
+        # CMake-generated and we don't run CMake on the submodule).
+        "libs/lemon-config",
         "libs/lemon",
     ])
 
@@ -162,7 +165,7 @@ def _build_extension(env):
         if build_target in ["editor", "template_debug"]:
             # DEBUG
             extension_env.Append(CCFLAGS=[
-                "/Zi",        # debug symbols
+                "/Z7",        # debug symbols embedded in .obj (parallel-safe vs /Zi shared PDB)
                 "/Od",        # no optimization
                 "/EHsc",
                 "/MT"
@@ -186,6 +189,16 @@ def _build_extension(env):
 
     # Source files
     sources = list(set(extension_env.Glob("source/*.cpp") + extension_env.Glob("source/**/*.cpp")))
+
+    # LEMON non-header symbols required by MaxWeightedMatching:
+    #   base.cc defines lemon::INVALID
+    #   bits/windows.cc defines lemon::bits::WinLock (Windows-only path)
+    # LP solver .cc files (glpk/cbc/clp/cplex/soplex/lp_*) are intentionally
+    # excluded — config.h leaves LEMON_HAVE_* undefined, no solver linkage.
+    sources.append(extension_env.File("libs/lemon/lemon/base.cc"))
+    if platform_name == "windows":
+        sources.append(extension_env.File("libs/lemon/lemon/bits/windows.cc"))
+
     # filter the source files in the gen subfolder
     exclude_dir = os.path.normpath("source/gen")
     try:
