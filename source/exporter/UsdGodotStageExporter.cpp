@@ -152,26 +152,78 @@ namespace idtxflow::exporter
         return cyl;
     }
 
+    ReconstructedTopology ReconstructQuads(std::vector<int> const& triangulated_indices)
+    {
+        // CHI-253 hook. Today's behaviour: pass-through (write the
+        // triangle indices as 3-vertex faces). Once CHI-253 lands its
+        // Lean → Slang ILP shader the body of this function dispatches
+        // it via RenderingDevice and returns the recovered topology.
+        //
+        // The CPU fallback (HiGHS / CBC) lands here too, behind a
+        // --solver=cpu flag. The interface is stable: input is the
+        // flat triangle index array, output is the (counts, indices)
+        // pair UsdGeomMesh consumes directly.
+        ReconstructedTopology out;
+        int tri_count = static_cast<int>(triangulated_indices.size()) / 3;
+        out.face_vertex_counts.reserve(tri_count);
+        out.face_vertex_indices = triangulated_indices;
+        for (int t = 0; t < tri_count; ++t) {
+            out.face_vertex_counts.push_back(3);
+        }
+        return out;
+    }
+
+    namespace {
+        // Per CHI-251: importer stores the original n-gon face counts
+        // on the Godot mesh as a sidecar so the round-trip back to
+        // USD is lossless. Look for that metadata first.
+        bool TryReadSidecarFaceCounts(
+            godot::Ref<godot::Mesh> const& mesh,
+            int surface_index,
+            std::vector<int>& out_counts)
+        {
+            if (!mesh.is_valid()) return false;
+            godot::String key = godot::String("original_face_vertex_counts_")
+                + godot::String::num_int64(surface_index);
+            if (!mesh->has_meta(key)) return false;
+            godot::Variant v = mesh->get_meta(key);
+            godot::PackedInt32Array arr = v;
+            out_counts.clear();
+            out_counts.reserve(arr.size());
+            for (int i = 0; i < arr.size(); ++i) out_counts.push_back(arr[i]);
+            return !out_counts.empty();
+        }
+
+        // CHI-253 per-node opt-out: source authors mark a Godot node
+        // with `v_sekai:export:reconstructQuads = false` when the mesh
+        // is intentionally tri-soup (hair cards, decals, prebaked LODs).
+        bool ShouldReconstructQuads(godot::Node3D* source_node)
+        {
+            if (source_node == nullptr) return true;
+            godot::String key = "v_sekai:export:reconstructQuads";
+            if (!source_node->has_meta(key)) return true;
+            return source_node->get_meta(key).booleanize();
+        }
+    }
+
     pxr::UsdGeomMesh ExportMesh(
         pxr::UsdStageRefPtr const& stage,
         pxr::SdfPath const& path,
         godot::Transform3D const& transform,
-        godot::Ref<godot::Mesh> const& mesh)
+        godot::Ref<godot::Mesh> const& mesh,
+        godot::Node3D* source_node)
     {
         pxr::UsdGeomMesh usd_mesh = pxr::UsdGeomMesh::Define(stage, path);
         if (!mesh.is_valid()) {
             return usd_mesh;
         }
 
-        // Concatenate all surfaces into a single UsdGeomMesh (each
-        // godot surface contributes vertices + triangles in the same
-        // index space). Cycle B will split per-material into separate
-        // GeomSubsets so the material binding tracks the surface
-        // boundary.
         pxr::VtArray<pxr::GfVec3f> points;
         pxr::VtArray<int> face_vertex_counts;
         pxr::VtArray<int> face_vertex_indices;
         pxr::VtArray<pxr::GfVec3f> normals;
+
+        bool reconstruct = ShouldReconstructQuads(source_node);
 
         int index_base = 0;
         int surface_count = mesh->get_surface_count();
@@ -195,12 +247,35 @@ namespace idtxflow::exporter
                 }
             }
 
-            int tri_count = indices.size() / 3;
-            for (int t = 0; t < tri_count; ++t) {
-                face_vertex_counts.push_back(3);
-                face_vertex_indices.push_back(index_base + indices[3 * t + 0]);
-                face_vertex_indices.push_back(index_base + indices[3 * t + 1]);
-                face_vertex_indices.push_back(index_base + indices[3 * t + 2]);
+            // n-gon recovery decision (CHI-253):
+            // 1. sidecar from the importer wins.
+            // 2. else if reconstruction is enabled, dispatch the
+            //    tris-to-quads hook.
+            // 3. else write triangulated counts.
+            std::vector<int> sidecar_counts;
+            std::vector<int> tri_indices;
+            tri_indices.reserve(indices.size());
+            for (int i = 0; i < indices.size(); ++i) {
+                tri_indices.push_back(index_base + indices[i]);
+            }
+
+            if (TryReadSidecarFaceCounts(mesh, s, sidecar_counts)) {
+                // Sidecar path — write counts verbatim, indices are
+                // already in n-gon order on the original USD.
+                for (int c : sidecar_counts) face_vertex_counts.push_back(c);
+                for (int v : tri_indices)    face_vertex_indices.push_back(v);
+            } else if (reconstruct) {
+                ReconstructedTopology recovered = ReconstructQuads(tri_indices);
+                for (int c : recovered.face_vertex_counts)  face_vertex_counts.push_back(c);
+                for (int v : recovered.face_vertex_indices) face_vertex_indices.push_back(v);
+            } else {
+                int tri_count = static_cast<int>(indices.size()) / 3;
+                for (int t = 0; t < tri_count; ++t) {
+                    face_vertex_counts.push_back(3);
+                    face_vertex_indices.push_back(tri_indices[3 * t + 0]);
+                    face_vertex_indices.push_back(tri_indices[3 * t + 1]);
+                    face_vertex_indices.push_back(tri_indices[3 * t + 2]);
+                }
             }
             index_base += static_cast<int>(verts.size());
         }
@@ -253,7 +328,7 @@ namespace idtxflow::exporter
             if (box.is_valid())      ExportCube(stage, my_path, mi->get_transform(), box);
             else if (sph.is_valid()) ExportSphere(stage, my_path, mi->get_transform(), sph);
             else if (cyl.is_valid()) ExportCylinder(stage, my_path, mi->get_transform(), cyl);
-            else                      ExportMesh(stage, my_path, mi->get_transform(), mesh);
+            else                      ExportMesh(stage, my_path, mi->get_transform(), mesh, mi);
         } else {
             ExportXform(stage, my_path, node->get_transform());
         }

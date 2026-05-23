@@ -98,11 +98,42 @@ namespace idtxflow::exporter
     /// Emit a UsdGeomMesh at `path` from a Godot ArrayMesh (or any
     /// Godot Mesh that yields surface arrays). Each surface in the
     /// Godot mesh becomes a faceSet on the single UsdGeomMesh.
+    ///
+    /// n-gon recovery — CHI-253: faceVertexCounts comes from one of
+    /// three sources, in priority order:
+    ///   1. `original_face_vertex_counts` sidecar metadata on the
+    ///      Godot mesh (set by the importer per CHI-251 when the
+    ///      source USD had n-gons). Round-trips losslessly.
+    ///   2. The tris-to-quads reconstruction hook (CHI-253) when no
+    ///      sidecar is present. Today the hook is a no-op stub; once
+    ///      CHI-253 lands its Lean→Slang ILP shader, this is where
+    ///      it dispatches.
+    ///   3. Plain triangulated output (`[3, 3, ..., 3]`) — the
+    ///      fallback when the sidecar is absent and reconstruction
+    ///      is disabled. This is the "lossy" path CHI-253 exists
+    ///      to remove for default exports.
+    ///
+    /// Source meshes can opt out of (2) via the
+    /// `v_sekai:export:reconstructQuads = false` metadata on the
+    /// Godot node — useful for hair cards, decals, prebaked LODs.
     pxr::UsdGeomMesh ExportMesh(
         pxr::UsdStageRefPtr const& stage,
         pxr::SdfPath const& path,
         godot::Transform3D const& transform,
-        godot::Ref<godot::Mesh> const& mesh);
+        godot::Ref<godot::Mesh> const& mesh,
+        godot::Node3D* source_node = nullptr);
+
+    /// CHI-253 reconstruction hook. Takes a flat triangle index
+    /// buffer (3*tri_count int32s) and returns the recovered
+    /// (faceVertexCounts, faceVertexIndices) pair. Today returns the
+    /// triangulated input unchanged; once CHI-253 ships its Slang
+    /// shader, this is the dispatch point.
+    struct ReconstructedTopology {
+        std::vector<int> face_vertex_counts;
+        std::vector<int> face_vertex_indices;
+    };
+    ReconstructedTopology ReconstructQuads(
+        std::vector<int> const& triangulated_indices);
 
     /// Recursive driver. Walks `node` and every Node3D descendant,
     /// dispatching to the per-type exporters above. Returns the prim
