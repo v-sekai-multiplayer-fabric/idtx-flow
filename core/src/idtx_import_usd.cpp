@@ -20,6 +20,7 @@
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/xformable.h>
+#include <pxr/base/gf/vec3f.h>
 #include <pxr/usd/usdShade/material.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
@@ -273,6 +274,71 @@ static idtx_material_t* read_material(pxr::UsdPrim const& prim)
     return out;
 }
 
+// Read a spring chain from a prim carrying VSekaiSpringBoneAPI.
+static idtx_spring_chain_t* read_spring_chain(pxr::UsdPrim const& prim)
+{
+    if (!prim.IsValid() || !prim.HasAPI(pxr::TfToken("VSekaiSpringBoneAPI"))) return nullptr;
+    auto* chain = idtx_spring_chain_create();
+    idtx_spring_chain_set_name(chain, prim.GetName().GetString().c_str());
+
+    float stiffness = 1.0f, drag = 0.4f, grav_p = 0.0f, hit_r = 0.02f;
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:stiffness")))    a.Get(&stiffness);
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:drag")))         a.Get(&drag);
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:gravityPower"))) a.Get(&grav_p);
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:hitRadius")))    a.Get(&hit_r);
+    idtx_spring_chain_set_dynamics(chain, stiffness, drag, grav_p, hit_r);
+
+    pxr::GfVec3f gdir(0, -1, 0);
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:gravityDir"))) a.Get(&gdir);
+    idtx_spring_chain_set_gravity_dir(chain, gdir[0], gdir[1], gdir[2]);
+
+    pxr::VtArray<int> joints;
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:joints"))) a.Get(&joints);
+    if (!joints.empty()) {
+        std::vector<int32_t> j(joints.size());
+        for (size_t i = 0; i < joints.size(); ++i) j[i] = joints[i];
+        idtx_spring_chain_set_joints(chain, static_cast<int32_t>(j.size()), j.data());
+    }
+
+    pxr::VtArray<int> cols;
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:colliders"))) a.Get(&cols);
+    for (auto const& c : cols) idtx_spring_chain_add_collider(chain, c);
+
+    return chain;
+}
+
+// Read a spring collider from a prim carrying VSekaiSpringBoneColliderAPI.
+static idtx_spring_collider_t* read_spring_collider(pxr::UsdPrim const& prim)
+{
+    if (!prim.IsValid() || !prim.HasAPI(pxr::TfToken("VSekaiSpringBoneColliderAPI"))) return nullptr;
+    auto* col = idtx_spring_collider_create();
+    idtx_spring_collider_set_name(col, prim.GetName().GetString().c_str());
+
+    pxr::TfToken shape;
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:collider:shape"))) a.Get(&shape);
+    idtx_spring_collider_set_shape(col,
+        shape == pxr::TfToken("capsule") ? IDTX_COLLIDER_CAPSULE : IDTX_COLLIDER_SPHERE);
+
+    int attached = -1;
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:collider:attachedBone")))
+        a.Get(&attached);
+    idtx_spring_collider_set_attached_bone(col, attached);
+
+    pxr::GfVec3f off(0, 0, 0);
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:collider:offset"))) a.Get(&off);
+    idtx_spring_collider_set_offset(col, off[0], off[1], off[2]);
+
+    float radius = 0.05f;
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:collider:radius"))) a.Get(&radius);
+    idtx_spring_collider_set_radius(col, radius);
+
+    pxr::GfVec3f tail(0, 0, 0);
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:collider:tail"))) a.Get(&tail);
+    idtx_spring_collider_set_tail(col, tail[0], tail[1], tail[2]);
+
+    return col;
+}
+
 }  // namespace idtx::core::detail
 
 extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const char* path)
@@ -329,6 +395,20 @@ extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const c
             }
         }
         idtx_avatar_add_mesh(avatar, mesh, mat_index);
+    }
+
+    // Spring bones — colliders first so chains can reference them by index.
+    // Indices in the USD attributes correspond to walk order under the
+    // SpringBones scope, which is what the exporter also writes.
+    for (auto const& prim : pxr::UsdPrimRange(root)) {
+        if (auto* col = idtx::core::detail::read_spring_collider(prim)) {
+            idtx_avatar_add_spring_collider(avatar, col);
+        }
+    }
+    for (auto const& prim : pxr::UsdPrimRange(root)) {
+        if (auto* chain = idtx::core::detail::read_spring_chain(prim)) {
+            idtx_avatar_add_spring_chain(avatar, chain);
+        }
     }
 
     return avatar;
