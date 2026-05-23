@@ -182,4 +182,35 @@ namespace idtxflow::exporter
     void ApplyVSekaiMToonAPI(
         pxr::UsdShadeMaterial const& usd_mat,
         godot::Ref<godot::ShaderMaterial> const& source);
+
+    // ----------------------------------------------------------------
+    // Cycle D — Skeleton3D + SpringBoneSimulator3D.
+    //
+    // Skeleton3D becomes a UsdSkelRoot wrapping a UsdSkelSkeleton:
+    //   * `joints` token[] in skeleton-relative paths
+    //   * `bindTransforms` and `restTransforms` matrix4d[]
+    //
+    // SpringBoneSimulator3D's chains map to Xform prims tagged with
+    // `VSekaiSpringBoneAPI` (stiffness / drag / gravity*); colliders
+    // map to Xform prims with `VSekaiSpringBoneColliderAPI` (shape /
+    // radius / offset / tail / normal / inside). Chain -> collider
+    // wiring goes through `v_sekai:springBone:colliders` rel arrays,
+    // matching the schema in openusd-fabric/schema/v_sekai_schema.usda.
+    // ----------------------------------------------------------------
+
+    /// Emit a UsdSkelRoot + UsdSkelSkeleton hierarchy from a Godot
+    /// Skeleton3D. Returns the SdfPath of the SkelRoot prim.
+    pxr::SdfPath ExportSkeleton(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& parent_path,
+        godot::Skeleton3D* skeleton);
+
+    /// Walk a SpringBoneSimulator3D, emit one Xform per chain root
+    /// (apiSchemas = ["VSekaiSpringBoneAPI"]) and one per collider
+    /// (apiSchemas = ["VSekaiSpringBoneColliderAPI"]). Returns the
+    /// SdfPath of the container Scope used to group them.
+    pxr::SdfPath ExportSpringBones(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& parent_path,
+        godot::Node3D* spring_bone_simulator);
 }

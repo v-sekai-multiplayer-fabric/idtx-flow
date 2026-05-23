@@ -24,6 +24,11 @@
 #include <pxr/usd/usdGeom/scope.h>
 #include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdShade/tokens.h>
+#include <pxr/usd/usdSkel/root.h>
+#include <pxr/usd/usdSkel/skeleton.h>
+#include <pxr/usd/usdSkel/tokens.h>
+
+#include <godot_cpp/classes/skeleton3d.hpp>
 
 #include <idtxflow/logging.h>
 
@@ -427,6 +432,116 @@ namespace idtxflow::exporter
                 attr.Set(static_cast<int>(int64_t(v)));
             }
         }
+    }
+
+    // ----------------------------------------------------------------
+    // Cycle D — Skeleton3D + SpringBoneSimulator3D.
+    // ----------------------------------------------------------------
+
+    pxr::SdfPath ExportSkeleton(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& parent_path,
+        godot::Skeleton3D* skeleton)
+    {
+        if (skeleton == nullptr) return pxr::SdfPath();
+        std::string skel_root_name = SanitisePrimName(skeleton->get_name()) + "_SkelRoot";
+        pxr::SdfPath root_path = parent_path.AppendChild(pxr::TfToken(skel_root_name));
+        pxr::UsdSkelRoot::Define(stage, root_path);
+
+        pxr::SdfPath skel_path = root_path.AppendChild(pxr::TfToken("Skeleton"));
+        pxr::UsdSkelSkeleton usd_skel = pxr::UsdSkelSkeleton::Define(stage, skel_path);
+
+        // Collect joints, parents, rest + bind transforms. UsdSkel
+        // joint identifiers are skeleton-relative path strings: each
+        // bone's path is its parent's path + "/" + sanitised name,
+        // with the root bones at the top level.
+        int n = skeleton->get_bone_count();
+        std::vector<std::string> joint_paths(n);
+        pxr::VtArray<pxr::TfToken> joints;
+        pxr::VtArray<pxr::GfMatrix4d> bind_transforms;
+        pxr::VtArray<pxr::GfMatrix4d> rest_transforms;
+
+        for (int i = 0; i < n; ++i) {
+            godot::String bone_name = skeleton->get_bone_name(i);
+            std::string san = SanitisePrimName(bone_name);
+            int parent = skeleton->get_bone_parent(i);
+            joint_paths[i] = (parent < 0) ? san : (joint_paths[parent] + "/" + san);
+            joints.push_back(pxr::TfToken(joint_paths[i]));
+
+            godot::Transform3D rest = skeleton->get_bone_rest(i);
+            rest_transforms.push_back(GodotTransformToUsdMatrix(rest));
+            godot::Transform3D bind = skeleton->get_bone_global_rest(i);
+            bind_transforms.push_back(GodotTransformToUsdMatrix(bind));
+        }
+
+        usd_skel.CreateJointsAttr().Set(joints);
+        usd_skel.CreateRestTransformsAttr().Set(rest_transforms);
+        usd_skel.CreateBindTransformsAttr().Set(bind_transforms);
+
+        auto op = usd_skel.AddTransformOp(pxr::UsdGeomXformOp::PrecisionDouble);
+        op.Set(GodotTransformToUsdMatrix(skeleton->get_transform()));
+
+        return root_path;
+    }
+
+    pxr::SdfPath ExportSpringBones(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& parent_path,
+        godot::Node3D* spring_bone_simulator)
+    {
+        if (spring_bone_simulator == nullptr) return pxr::SdfPath();
+        // Group container so chains + colliders stay tidy under one prim.
+        pxr::SdfPath group = parent_path.AppendChild(pxr::TfToken("SpringBones"));
+        pxr::UsdGeomScope::Define(stage, group);
+
+        // SpringBoneSimulator3D's chain + collider APIs are on the
+        // Godot side. We introspect the node's children via the
+        // Variant-callable surface so the exporter compiles without
+        // depending on godot-vrm's headers at build time. For the MVP
+        // each child Node3D that names itself "*_Chain" becomes a
+        // VSekaiSpringBoneAPI prim; each "*_Collider" becomes a
+        // VSekaiSpringBoneColliderAPI prim. Reading the actual
+        // SpringBoneSimulator3D state via its scripted API lands when
+        // godot-vrm exposes the chain/collider arrays as Godot
+        // properties (issue tracked under CHI-252).
+        int n = spring_bone_simulator->get_child_count();
+        for (int i = 0; i < n; ++i) {
+            godot::Node3D* child = godot::Object::cast_to<godot::Node3D>(
+                spring_bone_simulator->get_child(i));
+            if (child == nullptr) continue;
+            std::string name = SanitisePrimName(child->get_name());
+            pxr::SdfPath child_path = group.AppendChild(pxr::TfToken(name));
+            pxr::UsdGeomXform xf = pxr::UsdGeomXform::Define(stage, child_path);
+            auto op = xf.AddTransformOp(pxr::UsdGeomXformOp::PrecisionDouble);
+            op.Set(GodotTransformToUsdMatrix(child->get_transform()));
+
+            bool is_chain = name.find("Chain") != std::string::npos;
+            bool is_collider = name.find("Collider") != std::string::npos;
+            if (is_chain) {
+                xf.GetPrim().ApplyAPI(pxr::TfToken("VSekaiSpringBoneAPI"));
+                // Default values matching the schema; runtime values
+                // get filled in when godot-vrm's SpringBoneSimulator3D
+                // exposes its per-chain parameters.
+                xf.GetPrim().CreateAttribute(
+                    pxr::TfToken("v_sekai:springBone:stiffness"),
+                    pxr::SdfValueTypeNames->Float).Set(1.0f);
+                xf.GetPrim().CreateAttribute(
+                    pxr::TfToken("v_sekai:springBone:drag"),
+                    pxr::SdfValueTypeNames->Float).Set(0.4f);
+                xf.GetPrim().CreateAttribute(
+                    pxr::TfToken("v_sekai:springBone:hitRadius"),
+                    pxr::SdfValueTypeNames->Float).Set(0.02f);
+            } else if (is_collider) {
+                xf.GetPrim().ApplyAPI(pxr::TfToken("VSekaiSpringBoneColliderAPI"));
+                xf.GetPrim().CreateAttribute(
+                    pxr::TfToken("v_sekai:springBone:collider:shape"),
+                    pxr::SdfValueTypeNames->Token).Set(pxr::TfToken("sphere"));
+                xf.GetPrim().CreateAttribute(
+                    pxr::TfToken("v_sekai:springBone:collider:radius"),
+                    pxr::SdfValueTypeNames->Float).Set(0.05f);
+            }
+        }
+        return group;
     }
 
     bool ExportSceneToFile(godot::Node3D* root, godot::String const& path)
