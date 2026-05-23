@@ -236,6 +236,32 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
     // ---------------------------------------------------------------
     auto* skel = idtx_avatar_get_skeleton(avatar);
     int32_t bone_count = (skel != nullptr) ? idtx_skeleton_get_bone_count(skel) : 0;
+
+    // Compute IBM accessor up-front — must land in the accessors vector
+    // before the JSON for the accessors array is emitted. (Earlier
+    // versions appended it inside the skins emit block, which wrote
+    // accessor index 0 into skins while the accessors[] array was
+    // still empty in the JSON output.)
+    int ibm_accessor_index = -1;
+    if (bone_count > 0) {
+        std::vector<float> ibms(static_cast<size_t>(bone_count) * 16);
+        for (int32_t i = 0; i < bone_count; ++i) {
+            float bind[16]; idtx_skeleton_get_bone_bind(skel, i, bind);
+            pxr::GfMatrix4d m = idtx::core::float16_to_gf_matrix(bind);
+            idtx::core::gf_matrix_to_float16(m.GetInverse(), &ibms[i * 16]);
+        }
+        uint32_t ibm_off = idtx::core::detail::append_to_bin(
+            bin, ibms.data(), ibms.size() * sizeof(float));
+        Accessor a_ibm;
+        a_ibm.buffer_view = static_cast<int>(buffer_views.size());
+        a_ibm.component_type = CT_FLOAT;
+        a_ibm.count = bone_count;
+        a_ibm.type = "MAT4";
+        a_ibm.has_min_max = false;
+        buffer_views.push_back({ibm_off, static_cast<uint32_t>(ibms.size() * sizeof(float)), 0});
+        ibm_accessor_index = static_cast<int>(accessors.size());
+        accessors.push_back(a_ibm);
+    }
     int32_t root_node_index = 0;
     auto bone_node_index = [&](int32_t bone) -> int32_t {
         return (bone < 0) ? root_node_index : (1 + bone);
@@ -532,37 +558,15 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             j.end_array();
         }
 
-        // skins — single skin covering all bones, with inverseBindMatrices
-        // derived from idtx_skeleton's bind transforms. glTF expects
-        // each IBM to be the inverse of the bone's world-space rest
-        // pose, so the shader can transform vertex positions from mesh
-        // space into joint-local space at bind time.
+        // skins — single skin covering all bones. inverseBindMatrices
+        // accessor was computed before the JSON emission started so
+        // accessors[] already contains it.
         if (bone_count > 0) {
-            // Compute IBMs: invert each bind matrix.
-            std::vector<float> ibms(static_cast<size_t>(bone_count) * 16);
-            for (int32_t i = 0; i < bone_count; ++i) {
-                float bind[16]; idtx_skeleton_get_bone_bind(skel, i, bind);
-                // GfMatrix4d inversion is the cleanest route since we
-                // already depend on USD's gf headers in this TU.
-                pxr::GfMatrix4d m = idtx::core::float16_to_gf_matrix(bind);
-                pxr::GfMatrix4d inv = m.GetInverse();
-                idtx::core::gf_matrix_to_float16(inv, &ibms[i * 16]);
-            }
-            uint32_t ibm_off = idtx::core::detail::append_to_bin(
-                bin, ibms.data(), ibms.size() * sizeof(float));
-            Accessor a_ibm;
-            a_ibm.buffer_view = static_cast<int>(buffer_views.size());
-            a_ibm.component_type = CT_FLOAT;
-            a_ibm.count = bone_count;
-            a_ibm.type = "MAT4";
-            a_ibm.has_min_max = false;
-            buffer_views.push_back({ibm_off, static_cast<uint32_t>(ibms.size() * sizeof(float)), 0});
-            int ibm_accessor = static_cast<int>(accessors.size());
-            accessors.push_back(a_ibm);
-
             j.key("skins"); j.begin_array();
                 j.begin_object();
-                    j.key("inverseBindMatrices"); j.integer(ibm_accessor);
+                    if (ibm_accessor_index >= 0) {
+                        j.key("inverseBindMatrices"); j.integer(ibm_accessor_index);
+                    }
                     j.key("joints"); j.begin_array();
                         for (int32_t i = 0; i < bone_count; ++i) j.integer(bone_node_index(i));
                     j.end_array();

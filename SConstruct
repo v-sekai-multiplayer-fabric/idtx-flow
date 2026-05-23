@@ -20,6 +20,7 @@ env = Environment(
     	"openusdextension",
     	"ixwebsocket",
     	"idtxcore",
+    	"idtxcli",
     	"idtxflow_ext",
     	"idtxflow_sdk"
     ],
@@ -68,6 +69,8 @@ env = env.BuildGodotCPP()
 # Build the engine-agnostic C ABI core (idtx_core) — both libidtxflow
 # (Godot) and the future Unity P/Invoke assembly link against this.
 env.BuildIdtxCore()
+# Standalone CLI for smoke-testing the avatar pipeline against the core.
+env.BuildIdtxCli()
 # Build the extension bootstrap static library (for dependent third-party extensions)
 env.BuildExtBootstrapLib()
 # finally build the GDExtension itself, which will link against the previously built OpenUSD and Godot C++ bindings
