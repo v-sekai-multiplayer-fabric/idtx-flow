@@ -69,6 +69,9 @@ def _build_extension(env):
         f"{shared_include_path}",
         f"{ixws_path}",
         f"{usd_extension_path}/include",
+        # libidtx_core — engine-agnostic C ABI. Avatar conversion logic
+        # lives here so the Unity P/Invoke assembly can share it.
+        "core/include",
         # LEMON (cgg-bern/lemon @ cgg) — vendored as a submodule under
         # libs/lemon for the CHI-253 tris-to-quads max-weight matching
         # in source/exporter/UsdGodotStageExporter.cpp. libs/lemon-config
@@ -85,6 +88,7 @@ def _build_extension(env):
         f"{mdl_sdk_path}/lib",
         f"{ixws_build_dir}/Release" if platform_name == "windows" else f"{ixws_build_dir}",
         f"{usd_extension_path}/libs/{platform_name}",
+        "build/idtx_core",
     ])
 
     # OpenSSL library/include paths (platform-specific)
@@ -129,10 +133,11 @@ def _build_extension(env):
                 extension_env.Append(CPPPATH=[os.path.join(_vcpkg_installed, "include")])
         
     libs = [
-        "usd_ms", "tbb12" if platform_name == "windows" else "tbb.12",        
+        "usd_ms", "tbb12" if platform_name == "windows" else "tbb.12",
         f"libgodot-cpp.{platform_name}.{build_target}.{build_arch}",
         "ixwebsocket",
         "libidtx_usd",  # USD extension library
+        f"libidtx_core.{platform_name}.{build_arch}",  # engine-agnostic C ABI
     ]
 
     # OpenSSL static libs (all platforms)
@@ -228,6 +233,12 @@ def _build_extension(env):
     # Build the library
     library = extension_env.SharedLibrary(f"{build_dir}/{library_name}.{library_extension}", sources)
 
+    # Explicit dependency on libidtx_core — the link step consumes its
+    # .lib import library, so SCons must order them. Without this, -j8
+    # races between core's library build and gdextension's link.
+    if 'idtx_core_library_node' in env:
+        extension_env.Depends(library, env['idtx_core_library_node'])
+
     # Determine PDB path
     pdb_file = None
     if platform_name == "windows" and build_target in ["editor", "template_debug"]:
@@ -241,7 +252,7 @@ def _build_extension(env):
         install_targets.append(extension_env.File(pdb_file))
 
     install_ext = extension_env.Install(install_dir, install_targets)
-    install_libs = extension_env.Install(install_dir, _get_libs_to_install(platform_name, openusd_version))
+    install_libs = extension_env.Install(install_dir, _get_libs_to_install(platform_name, openusd_version, build_arch))
     extension_env.AddPostAction(library, _copy_usd_plugins)
     extension_env.AddPostAction(library, _copy_third_party_licenses)
 
@@ -253,7 +264,7 @@ def _build_extension(env):
     env['gdextension_library_node'] = library
 
 
-def _get_libs_to_install(platform_name, openusd_version=""):
+def _get_libs_to_install(platform_name, openusd_version="", build_arch="x86_64"):
     print("Getting libs to install...")
     usd_root = f"./thirdparty/openusd-{openusd_version}"
     mdl_sdk_root = "./thirdparty/mdl_sdk"
@@ -268,6 +279,7 @@ def _get_libs_to_install(platform_name, openusd_version=""):
             f"{mdl_sdk_root}/bin/nv_openimageio.dll",
             f"{mdl_sdk_root}/bin/mdl_distiller.dll",
             f"{usd_extension}/libs/{platform_name}/libidtx_usd.dll",
+            f"build/idtx_core/libidtx_core.{platform_name}.{build_arch}.dll",
         ]
     elif platform_name == "macos":
         libs_to_install = [
