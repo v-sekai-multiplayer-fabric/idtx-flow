@@ -73,6 +73,68 @@ IDTX_CORE_API int32_t  idtx_skeleton_get_bone_parent(const idtx_skeleton_t* skel
 IDTX_CORE_API void     idtx_skeleton_get_bone_rest(const idtx_skeleton_t* skel, int32_t index, float out_matrix[16]);
 IDTX_CORE_API void     idtx_skeleton_get_bone_bind(const idtx_skeleton_t* skel, int32_t index, float out_matrix[16]);
 
+// ---------------------------------------------------------------------
+// idtx_mesh — vertex / index / skinning data for a single mesh surface.
+// Multi-surface meshes are represented as multiple idtx_mesh_t handles
+// owned by the avatar.
+//
+// All arrays are caller-owned at set time; the mesh copies internally.
+// Layouts:
+//   positions: vertex_count * 3 floats (x,y,z)
+//   normals:   vertex_count * 3 floats (x,y,z) — pass NULL to skip
+//   uvs:       vertex_count * 2 floats (u,v)   — pass NULL to skip
+//   colors:    vertex_count * 4 floats (r,g,b,a) — pass NULL to skip
+//   indices:   index_count    int32s (triangle list)
+//
+// Skinning is set separately: bones_per_vertex is typically 4. Layout:
+//   bone_indices: vertex_count * bones_per_vertex int32s
+//   weights:      vertex_count * bones_per_vertex floats (summed to 1)
+// ---------------------------------------------------------------------
+
+IDTX_CORE_API idtx_mesh_t* idtx_mesh_create(void);
+IDTX_CORE_API void         idtx_mesh_destroy(idtx_mesh_t* mesh);
+
+IDTX_CORE_API void        idtx_mesh_set_name(idtx_mesh_t* mesh, const char* name);
+IDTX_CORE_API const char* idtx_mesh_get_name(const idtx_mesh_t* mesh);
+
+IDTX_CORE_API void idtx_mesh_set_vertices(
+    idtx_mesh_t* mesh,
+    int32_t vertex_count,
+    const float* positions,   // required
+    const float* normals,     // optional, NULL ok
+    const float* uvs,         // optional, NULL ok
+    const float* colors);     // optional, NULL ok
+
+IDTX_CORE_API void idtx_mesh_set_indices(
+    idtx_mesh_t* mesh,
+    int32_t index_count,
+    const int32_t* indices);
+
+IDTX_CORE_API void idtx_mesh_set_skinning(
+    idtx_mesh_t* mesh,
+    int32_t bones_per_vertex,
+    const int32_t* bone_indices,
+    const float* weights);
+
+IDTX_CORE_API int32_t idtx_mesh_get_vertex_count(const idtx_mesh_t* mesh);
+IDTX_CORE_API int32_t idtx_mesh_get_index_count(const idtx_mesh_t* mesh);
+IDTX_CORE_API int32_t idtx_mesh_get_bones_per_vertex(const idtx_mesh_t* mesh);
+
+// Bulk getters — copy out into caller buffers. out_* may be NULL to
+// signal "I just want the count." Pass a buffer of the size returned
+// by the matching get_*_count function.
+IDTX_CORE_API void idtx_mesh_get_positions(const idtx_mesh_t* mesh, float* out_positions);
+IDTX_CORE_API void idtx_mesh_get_normals  (const idtx_mesh_t* mesh, float* out_normals);
+IDTX_CORE_API void idtx_mesh_get_uvs      (const idtx_mesh_t* mesh, float* out_uvs);
+IDTX_CORE_API void idtx_mesh_get_colors   (const idtx_mesh_t* mesh, float* out_colors);
+IDTX_CORE_API void idtx_mesh_get_indices  (const idtx_mesh_t* mesh, int32_t* out_indices);
+IDTX_CORE_API void idtx_mesh_get_bone_indices(const idtx_mesh_t* mesh, int32_t* out_bone_indices);
+IDTX_CORE_API void idtx_mesh_get_weights     (const idtx_mesh_t* mesh, float* out_weights);
+
+IDTX_CORE_API int32_t idtx_mesh_has_normals(const idtx_mesh_t* mesh);
+IDTX_CORE_API int32_t idtx_mesh_has_uvs    (const idtx_mesh_t* mesh);
+IDTX_CORE_API int32_t idtx_mesh_has_colors (const idtx_mesh_t* mesh);
+
 #ifdef __cplusplus
 }
 #endif
