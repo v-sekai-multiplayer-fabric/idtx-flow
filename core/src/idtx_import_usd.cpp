@@ -20,10 +20,14 @@
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/xformable.h>
+#include <pxr/usd/usdShade/material.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
+#include <pxr/usd/usdShade/shader.h>
 #include <pxr/usd/usdSkel/bindingAPI.h>
 #include <pxr/usd/usdSkel/skeleton.h>
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace idtx::core::detail {
@@ -206,6 +210,69 @@ static idtx_mesh_t* read_mesh(pxr::UsdPrim const& prim)
     return mesh;
 }
 
+// Locate the UsdPreviewSurface shader subprim of a UsdShadeMaterial.
+// In export we always name it "PreviewSurface"; in import we accept
+// any child shader whose id is UsdPreviewSurface, so we round-trip
+// material files authored by other tools too.
+static pxr::UsdShadeShader find_preview_surface(pxr::UsdShadeMaterial const& mat)
+{
+    for (auto const& child : mat.GetPrim().GetChildren()) {
+        pxr::UsdShadeShader shader(child);
+        if (!shader) continue;
+        pxr::TfToken id;
+        if (shader.GetIdAttr() && shader.GetIdAttr().Get(&id)
+            && id == pxr::TfToken("UsdPreviewSurface")) {
+            return shader;
+        }
+    }
+    return pxr::UsdShadeShader();
+}
+
+// Read a UsdShadeMaterial -> idtx_material_t. Always succeeds (returns
+// at minimum a defaulted handle) so the path-to-index map stays in
+// sync with the avatar's material list.
+static idtx_material_t* read_material(pxr::UsdPrim const& prim)
+{
+    pxr::UsdShadeMaterial mat(prim);
+    idtx_material_t* out = idtx_material_create();
+    idtx_material_set_name(out, prim.GetName().GetString().c_str());
+
+    if (auto shader = find_preview_surface(mat)) {
+        pxr::GfVec3f diffuse(1.0f, 1.0f, 1.0f);
+        float opacity = 1.0f;
+        float metallic = 0.0f;
+        float roughness = 0.5f;
+        if (auto inp = shader.GetInput(pxr::TfToken("diffuseColor")))
+            inp.Get(&diffuse);
+        if (auto inp = shader.GetInput(pxr::TfToken("opacity")))
+            inp.Get(&opacity);
+        if (auto inp = shader.GetInput(pxr::TfToken("metallic")))
+            inp.Get(&metallic);
+        if (auto inp = shader.GetInput(pxr::TfToken("roughness")))
+            inp.Get(&roughness);
+        idtx_material_set_base_color(out, diffuse[0], diffuse[1], diffuse[2], opacity);
+        idtx_material_set_metallic(out, metallic);
+        idtx_material_set_roughness(out, roughness);
+    }
+
+    // MToon overlay if VSekaiMToonAPI is applied on the material prim.
+    if (prim.HasAPI(pxr::TfToken("VSekaiMToonAPI"))) {
+        pxr::GfVec3f shade(0.5f, 0.5f, 0.5f);
+        pxr::GfVec3f rim(0.0f, 0.0f, 0.0f);
+        float outline = 0.0f;
+        if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:mtoon:shadeColor")))
+            a.Get(&shade);
+        if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:mtoon:rimColor")))
+            a.Get(&rim);
+        if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:mtoon:outlineWidth")))
+            a.Get(&outline);
+        idtx_material_set_mtoon_shade_color(out, shade[0], shade[1], shade[2]);
+        idtx_material_set_mtoon_rim_color(out, rim[0], rim[1], rim[2]);
+        idtx_material_set_mtoon_outline_width(out, outline);
+    }
+    return out;
+}
+
 }  // namespace idtx::core::detail
 
 extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const char* path)
@@ -236,14 +303,33 @@ extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const c
         }
     }
 
+    // Two-pass walk: first collect materials so we can resolve mesh
+    // bindings without having to grow a setter on idtx_avatar.
+    std::unordered_map<std::string, int32_t> mat_path_to_index;
     for (auto const& prim : pxr::UsdPrimRange(root)) {
-        if (prim.IsA<pxr::UsdGeomMesh>()) {
-            if (auto* mesh = idtx::core::detail::read_mesh(prim)) {
-                idtx_avatar_add_mesh(avatar, mesh, -1);
-            }
+        if (prim.IsA<pxr::UsdShadeMaterial>()) {
+            idtx_material_t* mat = idtx::core::detail::read_material(prim);
+            int32_t idx = idtx_avatar_add_material(avatar, mat);
+            mat_path_to_index[prim.GetPath().GetString()] = idx;
         }
     }
 
-    // Material import + mesh-to-material binding follow.
+    for (auto const& prim : pxr::UsdPrimRange(root)) {
+        if (!prim.IsA<pxr::UsdGeomMesh>()) continue;
+        idtx_mesh_t* mesh = idtx::core::detail::read_mesh(prim);
+        if (mesh == nullptr) continue;
+
+        int32_t mat_index = -1;
+        pxr::UsdShadeMaterialBindingAPI binding(prim);
+        if (binding) {
+            pxr::UsdShadeMaterial bound = binding.ComputeBoundMaterial();
+            if (bound) {
+                auto it = mat_path_to_index.find(bound.GetPath().GetString());
+                if (it != mat_path_to_index.end()) mat_index = it->second;
+            }
+        }
+        idtx_avatar_add_mesh(avatar, mesh, mat_index);
+    }
+
     return avatar;
 }
