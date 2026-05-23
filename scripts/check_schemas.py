@@ -65,17 +65,40 @@ def main() -> int:
         if not cond:
             failures.append(message)
 
-    # 1. Plugin registration — TfType lookup returns a real type, not unknown.
+    # 1. Plugin registration. USD 25.x exposes codeless schemas as TfType
+    #    entries; USD 26.x deliberately does not (only schemaRegistry-based
+    #    lookup works). We check both paths so the script is portable
+    #    across both stacks.
+    registry = Usd.SchemaRegistry()
     for type_name in (
         "VSekaiMToonAPI",
+        "VSekaiMToonScssExtensionAPI",
         "VSekaiSpringBoneAPI",
         "VSekaiSpringBoneColliderAPI",
     ):
-        tf_type = Tf.Type.FindByName(type_name)
+        ok = False
+        # Path 1: USD 25.x — TfType lookup.
+        if not Tf.Type.FindByName(type_name).isUnknown:
+            ok = True
+        # Path 2: USD 26.x+ — schemaRegistry identifies applied APIs.
+        if not ok and registry.IsAppliedAPISchema(type_name):
+            ok = True
+        # Path 3: ultimate fallback — try ApplyAPI on a throwaway prim.
+        # If the schema is genuinely missing, this raises; catch + record.
+        if not ok:
+            try:
+                tmp_stage = Usd.Stage.CreateInMemory()
+                tmp_prim = tmp_stage.DefinePrim("/_probe", "Material")
+                tmp_prim.ApplyAPI(type_name)
+                if tmp_prim.HasAPI(type_name):
+                    ok = True
+            except Exception:
+                pass
         expect(
-            not tf_type.isUnknown,
-            f"TfType {type_name!r} not registered — check schema/plugInfo.json"
-            " and that PXR_PLUGINPATH_NAME includes the schema directory.",
+            ok,
+            f"Schema {type_name!r} not registered — check schema/plugInfo.json"
+            " (needs schemaIdentifier per Types entry) and that"
+            " PXR_PLUGINPATH_NAME includes the schema directory.",
         )
 
     # 2. Fixture round-trip — HasAPI on the flagged prims, attributes read back.

@@ -129,6 +129,113 @@ class "VSekaiMToonAPI" (
     )
 }
 
+class "VSekaiMToonScssExtensionAPI" (
+    inherits = </APISchemaBase>
+    customData = {
+        token apiSchemaType = "singleApply"
+        bool skipCodeGeneration = true
+    }
+    doc = """Sidecar API for the SCSS-only parameters that have no
+    VRM 1.0 MToon analogue. Applied **alongside** `VSekaiMToonAPI` on a
+    material whose original DCC source was Silent's Cel Shading Shader
+    (gitlab.com/s-ilent/SCSS). The canonical SCSS <-> MToon mapping
+    (`maps/scss_mtoon_map.json`) covers the lossless parameter subset;
+    this extension carries the rest so a SCSS material round-trips
+    through openusd-fabric without dropping data the artist
+    deliberately set.
+
+    The V-Sekai usd-converter-for-vrchat fork checks for this API on
+    re-import and restores the SCSS-only knobs on the resulting Unity
+    material; consumers that only speak MToon (`idtx-flow`, hdStorm)
+    safely ignore it."""
+)
+{
+    # Light ramp LUT (the SCSS shading look is driven by a ramp texture
+    # rather than MToon's shadingShift + shadingToony scalars).
+    asset v_sekai:mtoon:scss:rampTexture = @@
+    token v_sekai:mtoon:scss:lightRampType = "horizontal" (
+        allowedTokens = ["horizontal", "vertical", "none"]
+        doc = "Direction the SCSS light ramp samples."
+    )
+
+    # Additional matcap slots 2..4 (slot 1 maps to the canonical MToon
+    # matcapTexture/Factor in VSekaiMToonAPI).
+    asset v_sekai:mtoon:scss:matcap2Texture = @@
+    color3f v_sekai:mtoon:scss:matcap2Tint = (1.0, 1.0, 1.0)
+    float v_sekai:mtoon:scss:matcap2Strength = 1.0
+    token v_sekai:mtoon:scss:matcap2BlendMode = "additive" (
+        allowedTokens = ["additive", "multiply", "median"]
+    )
+    asset v_sekai:mtoon:scss:matcap3Texture = @@
+    color3f v_sekai:mtoon:scss:matcap3Tint = (1.0, 1.0, 1.0)
+    float v_sekai:mtoon:scss:matcap3Strength = 1.0
+    token v_sekai:mtoon:scss:matcap3BlendMode = "additive" (
+        allowedTokens = ["additive", "multiply", "median"]
+    )
+    asset v_sekai:mtoon:scss:matcap4Texture = @@
+    color3f v_sekai:mtoon:scss:matcap4Tint = (1.0, 1.0, 1.0)
+    float v_sekai:mtoon:scss:matcap4Strength = 1.0
+    token v_sekai:mtoon:scss:matcap4BlendMode = "additive" (
+        allowedTokens = ["additive", "multiply", "median"]
+    )
+
+    # Hatching (cross-hatch emulation, time-animated).
+    asset v_sekai:mtoon:scss:hatchingTexture = @@
+    float v_sekai:mtoon:scss:hatchingScale = 1.0
+    int v_sekai:mtoon:scss:hatchingMovementFps = 5
+    float v_sekai:mtoon:scss:hatchingShadingAdd = 1.0
+    float v_sekai:mtoon:scss:hatchingShadingMul = 0.0
+    float v_sekai:mtoon:scss:hatchingRimAdd = 1.0
+    float v_sekai:mtoon:scss:hatchingAlbedoMul = 0.0
+
+    # Alpha fresnel (SCSS-specific transparency edge effect).
+    bool v_sekai:mtoon:scss:useAlphaFresnel = false
+    float v_sekai:mtoon:scss:alphaFresnelWidth = 1.0
+    float v_sekai:mtoon:scss:alphaFresnelSharpness = 0.0
+    float v_sekai:mtoon:scss:alphaFresnelStrength = 0.5
+    float v_sekai:mtoon:scss:alphaFresnelThreshold = 1.0
+    bool v_sekai:mtoon:scss:alphaFresnelInvert = false
+
+    # AudioLink emissive — VRChat-world reactive emission.
+    bool v_sekai:mtoon:scss:useAudiolink = false
+    float v_sekai:mtoon:scss:audiolinkIntensity = 1.0
+    asset v_sekai:mtoon:scss:audiolinkMaskTexture = @@
+    int v_sekai:mtoon:scss:audiolinkMaskUv = 0
+
+    # SDF face mode (the anime-eye look — SDF-driven shadow / outline
+    # masking from a per-face direction vector).
+    token v_sekai:mtoon:scss:sdfMode = "off" (
+        allowedTokens = ["off", "outline", "shadow"]
+    )
+    float v_sekai:mtoon:scss:sdfSmoothness = 0.01
+    int v_sekai:mtoon:scss:sdfFrontVector = 4 (
+        doc = "SCSS cardinal-direction enum index for the SDF front axis."
+    )
+    int v_sekai:mtoon:scss:sdfRightVector = 1 (
+        doc = "SCSS cardinal-direction enum index for the SDF right axis."
+    )
+
+    # Detail maps — up to four with independent UV / type / blend / power.
+    asset v_sekai:mtoon:scss:detailMap1Texture = @@
+    int v_sekai:mtoon:scss:detailMap1Uv = 0
+    token v_sekai:mtoon:scss:detailMap1Type = "albedo" (
+        allowedTokens = ["albedo", "normal", "specular"]
+    )
+    token v_sekai:mtoon:scss:detailMap1Blend = "multiply" (
+        allowedTokens = ["multiply", "add", "overlay"]
+    )
+    float v_sekai:mtoon:scss:detailMap1Strength = 1.0
+    asset v_sekai:mtoon:scss:detailMap2Texture = @@
+    int v_sekai:mtoon:scss:detailMap2Uv = 0
+    token v_sekai:mtoon:scss:detailMap2Type = "albedo" (
+        allowedTokens = ["albedo", "normal", "specular"]
+    )
+    token v_sekai:mtoon:scss:detailMap2Blend = "multiply" (
+        allowedTokens = ["multiply", "add", "overlay"]
+    )
+    float v_sekai:mtoon:scss:detailMap2Strength = 1.0
+}
+
 class "VSekaiSpringBoneAPI" (
     inherits = </APISchemaBase>
     customData = {
