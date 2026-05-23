@@ -457,10 +457,34 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             j.end_object();
 
             // One node per bone, with children = bones whose parent
-            // is this bone.
+            // is this bone, and a local rest transform so the skeleton
+            // poses correctly. Without the matrix every bone sits at
+            // origin, IBM × identity ≠ rest pose, and the mesh skews
+            // to a spike radiating from origin (the classic Blender→
+            // Godot import artifact).
+            //
+            // idtx_skeleton stores `rest` as the joint-LOCAL transform
+            // (relative to parent — UsdSkel `restTransforms` semantics).
+            // That maps directly to glTF node `matrix` (also local TRS).
+            // USD row-major flat == glTF column-major flat for the
+            // transposed math convention they share, so we pass the
+            // 16 floats through verbatim. Skip emission for an
+            // identity rest (saves bytes; glTF default is identity).
+            auto is_identity = [](const float m[16]) {
+                for (int i = 0; i < 16; ++i) {
+                    float expected = (i % 5 == 0) ? 1.0f : 0.0f;
+                    if (std::abs(m[i] - expected) > 1e-6f) return false;
+                }
+                return true;
+            };
             for (int32_t i = 0; i < bone_count; ++i) {
                 j.begin_object();
                     j.key("name"); j.string(idtx_skeleton_get_bone_name(skel, i));
+                    float rest[16];
+                    idtx_skeleton_get_bone_rest(skel, i, rest);
+                    if (!is_identity(rest)) {
+                        j.key("matrix"); j.float_array(rest, 16);
+                    }
                     std::vector<int32_t> children;
                     for (int32_t k = 0; k < bone_count; ++k) {
                         if (idtx_skeleton_get_bone_parent(skel, k) == i) {
