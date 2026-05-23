@@ -285,5 +285,222 @@ namespace IdtxCore.Bridge
                 0, 0, 0, 1,
             };
         }
+
+        // ---------------------------------------------------------------
+        // Reverse direction — idtx_avatar -> GameObject hierarchy.
+        // ---------------------------------------------------------------
+
+        /// <summary>
+        /// Reconstruct a Unity GameObject hierarchy from an IdtxAvatar.
+        /// Creates a root GameObject, bone Transforms (if a skeleton is
+        /// attached), and a SkinnedMeshRenderer (skinned meshes) or
+        /// MeshFilter+MeshRenderer (static meshes) per idtx_mesh.
+        /// Caller owns the returned GameObject.
+        /// </summary>
+        public static GameObject AvatarToGameObject(IdtxAvatar avatar)
+        {
+            if (avatar == null) return null;
+
+            var root = new GameObject(string.IsNullOrEmpty(avatar.Name) ? "IdtxAvatar" : avatar.Name);
+            var rootXform = avatar.GetRootTransform();
+            ApplyMatrix16(root.transform, rootXform);
+
+            // Build bone Transform array from idtx_skeleton (if any).
+            Transform[] boneTransforms = null;
+            var skelHandle = NativeMethods.idtx_avatar_get_skeleton(avatar.Handle);
+            if (skelHandle.IsValid)
+            {
+                int n = NativeMethods.idtx_skeleton_get_bone_count(skelHandle);
+                boneTransforms = new Transform[n];
+                for (int i = 0; i < n; ++i)
+                {
+                    string name = NativeMethods.PtrToUtf8(
+                        NativeMethods.idtx_skeleton_get_bone_name(skelHandle, i));
+                    var t = new GameObject(name).transform;
+                    boneTransforms[i] = t;
+                }
+                // Second pass: parent up.
+                for (int i = 0; i < n; ++i)
+                {
+                    int parent = NativeMethods.idtx_skeleton_get_bone_parent(skelHandle, i);
+                    Transform parentT = (parent < 0 || parent >= n) ? root.transform : boneTransforms[parent];
+                    boneTransforms[i].SetParent(parentT, false);
+
+                    var rest = new float[16];
+                    NativeMethods.idtx_skeleton_get_bone_rest(skelHandle, i, rest);
+                    ApplyMatrix16(boneTransforms[i], rest);
+                }
+            }
+
+            // Materials (Unity Material instances, kept by index).
+            int matCount = avatar.MaterialCount;
+            var unityMats = new Material[matCount];
+            for (int i = 0; i < matCount; ++i)
+            {
+                var mh = NativeMethods.idtx_avatar_get_material(avatar.Handle, i);
+                unityMats[i] = MaterialFromHandle(mh);
+            }
+
+            int meshCount = avatar.MeshCount;
+            for (int i = 0; i < meshCount; ++i)
+            {
+                var mh = NativeMethods.idtx_avatar_get_mesh(avatar.Handle, i);
+                if (!mh.IsValid) continue;
+                int matIdx = NativeMethods.idtx_avatar_get_mesh_material(avatar.Handle, i);
+                Material mat = (matIdx >= 0 && matIdx < matCount) ? unityMats[matIdx] : null;
+
+                var unityMesh = MeshFromHandle(mh);
+                if (unityMesh == null) continue;
+
+                bool isSkinned = boneTransforms != null
+                    && NativeMethods.idtx_mesh_get_bones_per_vertex(mh) > 0;
+
+                var meshName = NativeMethods.PtrToUtf8(NativeMethods.idtx_mesh_get_name(mh));
+                var go = new GameObject(string.IsNullOrEmpty(meshName) ? $"Mesh_{i}" : meshName);
+                go.transform.SetParent(root.transform, false);
+
+                if (isSkinned)
+                {
+                    var smr = go.AddComponent<SkinnedMeshRenderer>();
+                    smr.sharedMesh = unityMesh;
+                    smr.bones = boneTransforms;
+                    smr.rootBone = boneTransforms.Length > 0 ? boneTransforms[0] : root.transform;
+                    if (mat != null) smr.sharedMaterial = mat;
+                }
+                else
+                {
+                    var mf = go.AddComponent<MeshFilter>();
+                    mf.sharedMesh = unityMesh;
+                    var mr = go.AddComponent<MeshRenderer>();
+                    if (mat != null) mr.sharedMaterial = mat;
+                }
+            }
+
+            return root;
+        }
+
+        private static Material MaterialFromHandle(MaterialHandle mh)
+        {
+            if (!mh.IsValid) return null;
+            // Use the Standard shader by default; consumers can swap to
+            // URP-Lit or MToon-equivalent post-construction.
+            var standard = Shader.Find("Standard");
+            var m = new Material(standard != null ? standard : Shader.Find("Diffuse"));
+            m.name = NativeMethods.PtrToUtf8(NativeMethods.idtx_material_get_name(mh));
+
+            var rgba = new float[4];
+            NativeMethods.idtx_material_get_base_color(mh, rgba);
+            if (m.HasProperty("_Color"))
+                m.SetColor("_Color", new Color(rgba[0], rgba[1], rgba[2], rgba[3]));
+            else if (m.HasProperty("_BaseColor"))
+                m.SetColor("_BaseColor", new Color(rgba[0], rgba[1], rgba[2], rgba[3]));
+
+            if (m.HasProperty("_Metallic"))
+                m.SetFloat("_Metallic", NativeMethods.idtx_material_get_metallic(mh));
+            if (m.HasProperty("_Glossiness"))
+                m.SetFloat("_Glossiness", 1.0f - NativeMethods.idtx_material_get_roughness(mh));
+            else if (m.HasProperty("_Smoothness"))
+                m.SetFloat("_Smoothness", 1.0f - NativeMethods.idtx_material_get_roughness(mh));
+
+            return m;
+        }
+
+        private static Mesh MeshFromHandle(MeshHandle mh)
+        {
+            int vc = NativeMethods.idtx_mesh_get_vertex_count(mh);
+            int ic = NativeMethods.idtx_mesh_get_index_count(mh);
+            if (vc <= 0 || ic <= 0) return null;
+
+            var positions = new float[vc * 3];
+            NativeMethods.idtx_mesh_get_positions(mh, positions);
+            var verts = new Vector3[vc];
+            for (int i = 0; i < vc; ++i)
+                verts[i] = new Vector3(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+
+            var mesh = new Mesh();
+            mesh.name = NativeMethods.PtrToUtf8(NativeMethods.idtx_mesh_get_name(mh));
+            if (vc > 65535) mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+            mesh.vertices = verts;
+
+            if (NativeMethods.idtx_mesh_has_normals(mh) != 0)
+            {
+                var n = new float[vc * 3];
+                NativeMethods.idtx_mesh_get_normals(mh, n);
+                var ns = new Vector3[vc];
+                for (int i = 0; i < vc; ++i)
+                    ns[i] = new Vector3(n[i * 3], n[i * 3 + 1], n[i * 3 + 2]);
+                mesh.normals = ns;
+            }
+            if (NativeMethods.idtx_mesh_has_uvs(mh) != 0)
+            {
+                var u = new float[vc * 2];
+                NativeMethods.idtx_mesh_get_uvs(mh, u);
+                var us = new Vector2[vc];
+                for (int i = 0; i < vc; ++i)
+                    us[i] = new Vector2(u[i * 2], u[i * 2 + 1]);
+                mesh.uv = us;
+            }
+            if (NativeMethods.idtx_mesh_has_colors(mh) != 0)
+            {
+                var c = new float[vc * 4];
+                NativeMethods.idtx_mesh_get_colors(mh, c);
+                var cs = new Color[vc];
+                for (int i = 0; i < vc; ++i)
+                    cs[i] = new Color(c[i * 4], c[i * 4 + 1], c[i * 4 + 2], c[i * 4 + 3]);
+                mesh.colors = cs;
+            }
+
+            var idx = new int[ic];
+            NativeMethods.idtx_mesh_get_indices(mh, idx);
+            mesh.SetTriangles(idx, 0);
+
+            int bpv = NativeMethods.idtx_mesh_get_bones_per_vertex(mh);
+            if (bpv == 4)
+            {
+                var bi = new int[vc * 4];
+                var bw = new float[vc * 4];
+                NativeMethods.idtx_mesh_get_bone_indices(mh, bi);
+                NativeMethods.idtx_mesh_get_weights(mh, bw);
+                var bws = new BoneWeight[vc];
+                for (int i = 0; i < vc; ++i)
+                {
+                    bws[i].boneIndex0 = bi[i * 4 + 0];
+                    bws[i].boneIndex1 = bi[i * 4 + 1];
+                    bws[i].boneIndex2 = bi[i * 4 + 2];
+                    bws[i].boneIndex3 = bi[i * 4 + 3];
+                    bws[i].weight0    = bw[i * 4 + 0];
+                    bws[i].weight1    = bw[i * 4 + 1];
+                    bws[i].weight2    = bw[i * 4 + 2];
+                    bws[i].weight3    = bw[i * 4 + 3];
+                }
+                mesh.boneWeights = bws;
+            }
+
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        private static void ApplyMatrix16(Transform t, float[] m)
+        {
+            // Convert the row-major matrix back into a Unity Matrix4x4
+            // (which is column-major in storage), then decompose into
+            // localPosition / localRotation / localScale.
+            var mat = new Matrix4x4();
+            for (int row = 0; row < 4; ++row)
+                for (int col = 0; col < 4; ++col)
+                    mat[row, col] = m[row * 4 + col];
+
+            var pos = new Vector3(mat.m03, mat.m13, mat.m23);
+            // Decompose: rotation from the orthogonalised basis,
+            // scale from each basis vector's length.
+            var sx = new Vector3(mat.m00, mat.m10, mat.m20).magnitude;
+            var sy = new Vector3(mat.m01, mat.m11, mat.m21).magnitude;
+            var sz = new Vector3(mat.m02, mat.m12, mat.m22).magnitude;
+            var rot = mat.rotation;
+
+            t.localPosition = pos;
+            t.localRotation = rot;
+            t.localScale = new Vector3(sx, sy, sz);
+        }
     }
 }
