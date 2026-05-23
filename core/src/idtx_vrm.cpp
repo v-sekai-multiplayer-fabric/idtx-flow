@@ -108,6 +108,7 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
     std::vector<Accessor>   accessors;
 
     // glTF constants
+    constexpr int CT_UINT16  = 5123;
     constexpr int CT_UINT32  = 5125;
     constexpr int CT_FLOAT   = 5126;
     constexpr int TARGET_ARRAY_BUFFER         = 34962;
@@ -120,6 +121,8 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
         int positions_accessor = -1;
         int normals_accessor   = -1;
         int uvs_accessor       = -1;
+        int joints_accessor    = -1;
+        int weights_accessor   = -1;
         int indices_accessor   = -1;
     };
     int32_t mesh_count = idtx_avatar_get_mesh_count(avatar);
@@ -177,6 +180,37 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             buffer_views.push_back({uo, static_cast<uint32_t>(uvs.size() * sizeof(float)), TARGET_ARRAY_BUFFER});
             mesh_primitives[mi].uvs_accessor = static_cast<int>(accessors.size());
             accessors.push_back(au);
+        }
+
+        // Skinning — JOINTS_0 (VEC4 uint16) + WEIGHTS_0 (VEC4 float),
+        // only when the mesh carries per-vertex skinning data and the
+        // bones_per_vertex == 4 (glTF's standard layout).
+        if (idtx_mesh_get_bones_per_vertex(mh) == 4) {
+            std::vector<int32_t> bi(static_cast<size_t>(vc) * 4);
+            std::vector<float>   wt(static_cast<size_t>(vc) * 4);
+            idtx_mesh_get_bone_indices(mh, bi.data());
+            idtx_mesh_get_weights(mh, wt.data());
+
+            // Pack bone indices into uint16. Avatars with < 65k bones
+            // round-trip cleanly; pathological cases get clamped.
+            std::vector<uint16_t> bi16(bi.size());
+            for (size_t i = 0; i < bi.size(); ++i) {
+                int32_t v = bi[i];
+                bi16[i] = (v < 0 || v > 0xFFFF) ? 0 : static_cast<uint16_t>(v);
+            }
+            uint32_t jo = idtx::core::detail::append_to_bin(bin, bi16.data(), bi16.size() * sizeof(uint16_t));
+            Accessor aj; aj.buffer_view = static_cast<int>(buffer_views.size());
+            aj.component_type = CT_UINT16; aj.count = vc; aj.type = "VEC4"; aj.has_min_max = false;
+            buffer_views.push_back({jo, static_cast<uint32_t>(bi16.size() * sizeof(uint16_t)), TARGET_ARRAY_BUFFER});
+            mesh_primitives[mi].joints_accessor = static_cast<int>(accessors.size());
+            accessors.push_back(aj);
+
+            uint32_t wo = idtx::core::detail::append_to_bin(bin, wt.data(), wt.size() * sizeof(float));
+            Accessor aw; aw.buffer_view = static_cast<int>(buffer_views.size());
+            aw.component_type = CT_FLOAT; aw.count = vc; aw.type = "VEC4"; aw.has_min_max = false;
+            buffer_views.push_back({wo, static_cast<uint32_t>(wt.size() * sizeof(float)), TARGET_ARRAY_BUFFER});
+            mesh_primitives[mi].weights_accessor = static_cast<int>(accessors.size());
+            accessors.push_back(aw);
         }
 
         // indices (uint32 — glTF doesn't have uint16/uint32 ambiguity
@@ -300,6 +334,12 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                                 if (mp.uvs_accessor >= 0) {
                                     j.key("TEXCOORD_0"); j.integer(mp.uvs_accessor);
                                 }
+                                if (mp.joints_accessor >= 0) {
+                                    j.key("JOINTS_0"); j.integer(mp.joints_accessor);
+                                }
+                                if (mp.weights_accessor >= 0) {
+                                    j.key("WEIGHTS_0"); j.integer(mp.weights_accessor);
+                                }
                             j.end_object();
                             if (mp.indices_accessor >= 0) {
                                 j.key("indices"); j.integer(mp.indices_accessor);
@@ -396,6 +436,20 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             j.key("buffers"); j.begin_array();
                 j.begin_object();
                     j.key("byteLength"); j.integer(static_cast<int64_t>(bin.size()));
+                j.end_object();
+            j.end_array();
+        }
+
+        // skins — single skin covering all bones, if a skeleton exists.
+        // Each glTF mesh node that has skinning data references skin 0
+        // via node.skin (omitted for now — every primitive uses the same
+        // skin, no per-mesh skin slot variability in the MVP).
+        if (bone_count > 0) {
+            j.key("skins"); j.begin_array();
+                j.begin_object();
+                    j.key("joints"); j.begin_array();
+                        for (int32_t i = 0; i < bone_count; ++i) j.integer(bone_node_index(i));
+                    j.end_array();
                 j.end_object();
             j.end_array();
         }
