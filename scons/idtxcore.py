@@ -79,6 +79,7 @@ def _build_idtx_core(env):
         "core/src/usd_helpers.cpp",
         "core/src/idtx_export_usd.cpp",
         "core/src/idtx_import_usd.cpp",
+        "core/src/idtx_vrm.cpp",
     ]
 
     library_name = f"libidtx_core.{platform_name}.{build_arch}"

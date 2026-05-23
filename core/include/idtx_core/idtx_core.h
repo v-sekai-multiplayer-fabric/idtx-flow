@@ -244,6 +244,26 @@ IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
 IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(
     const char* path);
 
+// VRM 1.0 export — writes a .vrm (glTF binary container) with the
+// VRMC_vrm extension. MToon materials get VRMC_materials_mtoon; if a
+// skeleton is present, its bone names are looked up against the
+// humanoid-bones bridge map for the VRMC_vrm.humanoid.humanBones table.
+//
+// Error codes match the USD path:
+//   0 = success
+//   1 = invalid argument
+//   2 = file open failed
+//   3 = write failed
+//   99 = not yet implemented for the requested feature combination
+IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
+    const idtx_avatar_t* avatar,
+    const char* path);
+
+// VRM 1.0 import — parses a .vrm at `path` and rebuilds an
+// idtx_avatar_t* from it (inverse of the export).
+IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_vrm(
+    const char* path);
+
 #ifdef __cplusplus
 }
 #endif
