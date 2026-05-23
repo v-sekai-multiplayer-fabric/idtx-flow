@@ -78,6 +78,7 @@ def _build_idtx_core(env):
         "core/src/idtx_springbone.cpp",
         "core/src/string_utils.cpp",
         "core/src/usd_helpers.cpp",
+        "core/src/json_writer.cpp",
         "core/src/idtx_export_usd.cpp",
         "core/src/idtx_import_usd.cpp",
         "core/src/idtx_vrm.cpp",
