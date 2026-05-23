@@ -19,7 +19,10 @@
 
 #include "idtx_core/internal/vrm_humanoid_bones.h"
 
+#include <algorithm>
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace idtx::core::vrm {
 
@@ -54,33 +57,56 @@ bool is_humanoid_bone(const char* name)
 }
 
 namespace {
-    // Canonicalise: lowercase ASCII, strip non-alphanumeric. Caller
-    // owns the buffer; returns the count written.
-    size_t canonicalize_lower(const char* in, char* out, size_t cap) {
-        size_t n = 0;
-        if (in == nullptr) { out[0] = '\0'; return 0; }
-        for (size_t i = 0; in[i] && n + 1 < cap; ++i) {
+    // Tokenize a bone name into a sorted token bag. Splits on
+    // non-alphanumeric AND on lower-to-upper case transitions so
+    // both `Upper_arm_L` and `leftUpperArm` decompose into the same
+    // pieces. Also normalises Blender VRM-0.x side suffixes (`_L`,
+    // `_R` → `left`, `right`) to match VRM-1.0 canonical prefixes.
+    // Tokens land in `out_tokens[0..N)`, each NUL-terminated.
+    // Returns N. `arena` holds the lowercased characters; tokens
+    // point into it.
+    size_t tokenize(const char* in, std::vector<std::string>& out) {
+        out.clear();
+        if (in == nullptr) return 0;
+        std::string cur;
+        auto flush = [&]() {
+            if (cur.empty()) return;
+            // Normalise side-only tokens.
+            if (cur == "l")      cur = "left";
+            else if (cur == "r") cur = "right";
+            out.push_back(cur);
+            cur.clear();
+        };
+        for (size_t i = 0; in[i]; ++i) {
             char c = in[i];
-            if (c >= 'A' && c <= 'Z')      out[n++] = static_cast<char>(c + ('a' - 'A'));
-            else if (c >= 'a' && c <= 'z') out[n++] = c;
-            else if (c >= '0' && c <= '9') out[n++] = c;
-            // skip _, ., -, /, etc.
+            bool is_lower = (c >= 'a' && c <= 'z');
+            bool is_upper = (c >= 'A' && c <= 'Z');
+            bool is_digit = (c >= '0' && c <= '9');
+            if (is_upper) {
+                // Boundary: end the previous token before this capital.
+                if (!cur.empty()) flush();
+                cur.push_back(static_cast<char>(c + ('a' - 'A')));
+            } else if (is_lower || is_digit) {
+                cur.push_back(c);
+            } else {
+                flush();   // _, ., -, /, space, etc.
+            }
         }
-        out[n] = '\0';
-        return n;
+        flush();
+        std::sort(out.begin(), out.end());
+        return out.size();
     }
 }
 
 const char* match_humanoid_bone(const char* name)
 {
     if (name == nullptr) return nullptr;
-    char input_canon[64];
-    canonicalize_lower(name, input_canon, sizeof(input_canon));
-    if (input_canon[0] == '\0') return nullptr;
+    std::vector<std::string> input_tokens;
+    if (tokenize(name, input_tokens) == 0) return nullptr;
     for (size_t i = 0; i < kHumanoidBoneCount; ++i) {
-        char canon[64];
-        canonicalize_lower(kHumanoidBoneNames[i], canon, sizeof(canon));
-        if (std::strcmp(canon, input_canon) == 0) {
+        std::vector<std::string> canon_tokens;
+        tokenize(kHumanoidBoneNames[i], canon_tokens);
+        if (input_tokens == canon_tokens) {
             return kHumanoidBoneNames[i];
         }
     }
