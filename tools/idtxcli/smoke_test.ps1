@@ -43,6 +43,12 @@ $fixtures = @(
     'mire_essence'
 )
 
+# VRM 0.x fixtures live under vrm0_samples/ — different round-trip
+# direction (VRM -> USD -> VRM), so they get their own loop below.
+$vrm0_fixtures = @(
+    @{ name = 'Godette_vrm_v4'; expected_source_vrm = '0.x' }
+)
+
 $failed = 0
 foreach ($f in $fixtures) {
     $src  = "openusd-fabric\tests\fixtures\$f.usda"
@@ -107,6 +113,35 @@ foreach ($f in $fixtures) {
     $status = if ($ok) { 'PASS' } else { 'FAIL'; $failed++ }
     Write-Host ("{0,-28} {1}  usd->vrm rc={2}  vrm->usd rc={3}  usdchecker rc={4}{5}{6}" -f `
         $f, $status, $rc1, $rc2, $rc3, $checker_msg, $diff_msg)
+}
+
+foreach ($v in $vrm0_fixtures) {
+    $name  = $v.name
+    $src   = "openusd-fabric\tests\fixtures\vrm0_samples\$name.vrm"
+    $usd   = "$cliDir\${name}.usda"
+    $back  = "$cliDir\${name}_rt.vrm"
+    if (-not (Test-Path $src)) {
+        Write-Warning "skipping VRM 0.x fixture $name - missing"
+        continue
+    }
+    & "$cliDir\idtxcli.exe" vrm-to-usd $src $usd > $null
+    $rc1 = $LASTEXITCODE
+    & "$cliDir\idtxcli.exe" usd-to-vrm $usd $back > $null
+    $rc2 = $LASTEXITCODE
+
+    # Verify the provenance customData got stamped — the VRM 0.x
+    # detection in idtx_vrm_import.cpp should have written
+    # vSekai:upgrade:fromVrm = "0.x" onto the avatar root prim.
+    $provenance_ok = $false
+    if (Test-Path $usd) {
+        $hit = Select-String -Path $usd -Pattern ('"vSekai:upgrade:fromVrm" = "' + $v.expected_source_vrm + '"') -ErrorAction SilentlyContinue
+        $provenance_ok = ($null -ne $hit)
+    }
+
+    $ok = ($rc1 -eq 0) -and ($rc2 -eq 0) -and (Test-Path $usd) -and (Test-Path $back) -and $provenance_ok
+    $status = if ($ok) { 'PASS' } else { 'FAIL'; $failed++ }
+    Write-Host ("{0,-28} {1}  vrm->usd rc={2}  usd->vrm rc={3}  provenance={4}" -f `
+        ($name + " [VRM " + $v.expected_source_vrm + "]"), $status, $rc1, $rc2, $provenance_ok)
 }
 
 if ($failed -gt 0) {

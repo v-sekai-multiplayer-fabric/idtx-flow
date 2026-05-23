@@ -106,6 +106,38 @@ extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_vrm(const c
 
     idtx_avatar_t* avatar = idtx_avatar_create();
 
+    // VRM version detection from data->data_extensions. The VRM 0.x
+    // spec named the extension "VRM"; VRM 1.0 renamed it to
+    // "VRMC_vrm". Both can also appear in extensionsUsed. Stamping
+    // the provenance lets a later USD round-trip preserve which
+    // source the avatar came from.
+    for (size_t e = 0; e < data->data_extensions_count; ++e) {
+        const char* name = data->data_extensions[e].name;
+        if (name == nullptr) continue;
+        if (std::strcmp(name, "VRMC_vrm") == 0) {
+            idtx_avatar_set_source_vrm_version(avatar, "1.0");
+            break;
+        } else if (std::strcmp(name, "VRM") == 0) {
+            idtx_avatar_set_source_vrm_version(avatar, "0.x");
+            break;
+        }
+    }
+    if (idtx_avatar_get_source_vrm_version(avatar)[0] == '\0') {
+        // Fall back to extensionsUsed if the extension isn't
+        // top-level (some glTF authoring tools split data layout).
+        for (size_t e = 0; e < data->extensions_used_count; ++e) {
+            const char* name = data->extensions_used[e];
+            if (name == nullptr) continue;
+            if (std::strcmp(name, "VRMC_vrm") == 0) {
+                idtx_avatar_set_source_vrm_version(avatar, "1.0");
+                break;
+            } else if (std::strcmp(name, "VRM") == 0) {
+                idtx_avatar_set_source_vrm_version(avatar, "0.x");
+                break;
+            }
+        }
+    }
+
     // Avatar name + root transform: use the first scene's first root
     // node. Sufficient for the avatars idtx-flow writes (single root).
     cgltf_node* root_node = nullptr;

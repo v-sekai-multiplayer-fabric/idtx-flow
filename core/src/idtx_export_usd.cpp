@@ -131,6 +131,12 @@ static pxr::SdfPath emit_mesh(
     pxr::SdfPath mesh_path = unique_child_path(parent_path, desired, siblings);
     pxr::UsdGeomMesh usd_mesh = pxr::UsdGeomMesh::Define(stage, mesh_path);
 
+    // UsdGeomMesh's subdivisionScheme defaults to "catmullClark" — which
+    // is wrong for game-content geometry. Always emit "none" so consumers
+    // treat the mesh as the polygon set it actually is, and so the
+    // round-trip diff stays clean for fixtures that author it explicitly.
+    usd_mesh.CreateSubdivisionSchemeAttr().Set(pxr::UsdGeomTokens->none);
+
     // Positions
     std::vector<float> positions(static_cast<size_t>(vc) * 3);
     idtx_mesh_get_positions(mesh, positions.data());
