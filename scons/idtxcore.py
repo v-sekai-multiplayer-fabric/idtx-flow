@@ -82,6 +82,7 @@ def _build_idtx_core(env):
         "core/src/idtx_export_usd.cpp",
         "core/src/idtx_import_usd.cpp",
         "core/src/idtx_vrm.cpp",
+        "core/src/vrm_humanoid_bones.cpp",
     ]
 
     library_name = f"libidtx_core.{platform_name}.{build_arch}"

@@ -6,12 +6,14 @@
 
 #include "idtx_core/idtx_core.h"
 #include "idtx_core/internal/json_writer.h"
+#include "idtx_core/internal/vrm_humanoid_bones.h"
 
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace idtx::core::detail {
@@ -80,9 +82,29 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
 {
     if (avatar == nullptr || path == nullptr) return 1;
 
-    // Build a minimal valid VRM 1.0 glTF document. Mesh/skin/material
-    // accessors land in subsequent cycles; for now the file parses as
-    // a valid GLB + a valid VRM 1.0 file with humanoid metadata only.
+    // Plan the node table: index 0 is the avatar root; bones (if any
+    // skeleton attached) get sequential indices after it. We need the
+    // bone -> node-index map twice: once to write nodes[].children and
+    // once to write humanBones[boneName].node.
+    auto* skel = idtx_avatar_get_skeleton(avatar);
+    int32_t bone_count = (skel != nullptr) ? idtx_skeleton_get_bone_count(skel) : 0;
+    int32_t root_node_index = 0;
+    auto bone_node_index = [&](int32_t bone) -> int32_t {
+        return (bone < 0) ? root_node_index : (1 + bone);
+    };
+
+    // For humanoid mapping, walk the bones once to find which bone
+    // (if any) carries each VRM 1.0 humanoid name.
+    std::unordered_map<std::string, int32_t> humanoid_to_bone;
+    if (skel != nullptr) {
+        for (int32_t i = 0; i < bone_count; ++i) {
+            const char* bn = idtx_skeleton_get_bone_name(skel, i);
+            if (idtx::core::vrm::is_humanoid_bone(bn)) {
+                humanoid_to_bone[bn] = i;
+            }
+        }
+    }
+
     idtx::core::JsonWriter j;
     j.begin_object();
         j.key("asset"); j.begin_object();
@@ -94,17 +116,52 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             j.string("VRMC_vrm");
         j.end_array();
 
-        // Minimum scene / node so the GLB is structurally valid.
+        // Scene + scenes
         j.key("scene"); j.integer(0);
         j.key("scenes"); j.begin_array();
             j.begin_object();
-                j.key("nodes"); j.begin_array(); j.integer(0); j.end_array();
+                j.key("nodes"); j.begin_array(); j.integer(root_node_index); j.end_array();
             j.end_object();
         j.end_array();
+
+        // Nodes — root first, then bones. Each bone references its
+        // children via parent-of-i scan. Bones with no parent
+        // (parent_index == -1) become children of the avatar root.
         j.key("nodes"); j.begin_array();
+            // Root node — its children are the orphan bones.
             j.begin_object();
                 j.key("name"); j.string(idtx_avatar_get_name(avatar));
+                if (bone_count > 0) {
+                    std::vector<int32_t> root_children;
+                    for (int32_t i = 0; i < bone_count; ++i) {
+                        if (idtx_skeleton_get_bone_parent(skel, i) < 0) {
+                            root_children.push_back(bone_node_index(i));
+                        }
+                    }
+                    if (!root_children.empty()) {
+                        j.key("children");
+                        j.int_array(root_children.data(), root_children.size());
+                    }
+                }
             j.end_object();
+
+            // One node per bone, with children = bones whose parent
+            // is this bone.
+            for (int32_t i = 0; i < bone_count; ++i) {
+                j.begin_object();
+                    j.key("name"); j.string(idtx_skeleton_get_bone_name(skel, i));
+                    std::vector<int32_t> children;
+                    for (int32_t k = 0; k < bone_count; ++k) {
+                        if (idtx_skeleton_get_bone_parent(skel, k) == i) {
+                            children.push_back(bone_node_index(k));
+                        }
+                    }
+                    if (!children.empty()) {
+                        j.key("children");
+                        j.int_array(children.data(), children.size());
+                    }
+                j.end_object();
+            }
         j.end_array();
 
         j.key("extensions"); j.begin_object();
@@ -118,9 +175,12 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                 j.end_object();
                 j.key("humanoid"); j.begin_object();
                     j.key("humanBones"); j.begin_object();
-                        // Empty for now — populated when skeleton bone
-                        // names are matched against the lean-emitted
-                        // humanoid_bones_map.json (Phase 7.3).
+                        for (auto const& kv : humanoid_to_bone) {
+                            j.key(kv.first.c_str());
+                            j.begin_object();
+                                j.key("node"); j.integer(bone_node_index(kv.second));
+                            j.end_object();
+                        }
                     j.end_object();
                 j.end_object();
             j.end_object();
