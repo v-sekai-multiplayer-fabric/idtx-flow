@@ -26,8 +26,10 @@
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
 #include <pxr/usd/usdShade/tokens.h>
+#include <pxr/usd/usdSkel/bindingAPI.h>
 #include <pxr/usd/usdSkel/root.h>
 #include <pxr/usd/usdSkel/skeleton.h>
+#include <pxr/usd/usdSkel/tokens.h>
 
 #include <string>
 #include <vector>
@@ -267,6 +269,50 @@ static pxr::SdfPath emit_material(
     return mat_path;
 }
 
+// Bind a UsdGeomMesh to the avatar's UsdSkelSkeleton at `skel_path`,
+// applying UsdSkelBindingAPI and writing jointIndices / jointWeights
+// primvars from the idtx_mesh skinning data. No-op if the mesh has no
+// skinning information or the skeleton path is empty.
+static void bind_mesh_to_skeleton(
+    pxr::UsdStageRefPtr const& stage,
+    pxr::SdfPath const& mesh_path,
+    pxr::SdfPath const& skel_path,
+    idtx_mesh_t const* mesh)
+{
+    if (mesh == nullptr || mesh_path.IsEmpty() || skel_path.IsEmpty()) return;
+    int32_t bpv = idtx_mesh_get_bones_per_vertex(mesh);
+    int32_t vc  = idtx_mesh_get_vertex_count(mesh);
+    if (bpv <= 0 || vc <= 0) return;
+
+    pxr::UsdPrim mesh_prim = stage->GetPrimAtPath(mesh_path);
+    if (!mesh_prim.IsValid()) return;
+
+    pxr::UsdSkelBindingAPI binding = pxr::UsdSkelBindingAPI::Apply(mesh_prim);
+    binding.CreateSkeletonRel().AddTarget(skel_path);
+
+    std::vector<int32_t> bi(static_cast<size_t>(vc) * static_cast<size_t>(bpv));
+    std::vector<float>   bw(static_cast<size_t>(vc) * static_cast<size_t>(bpv));
+    idtx_mesh_get_bone_indices(mesh, bi.data());
+    idtx_mesh_get_weights(mesh, bw.data());
+
+    pxr::VtArray<int>   indices_vt;
+    pxr::VtArray<float> weights_vt;
+    indices_vt.reserve(bi.size());
+    weights_vt.reserve(bw.size());
+    for (auto v : bi) indices_vt.push_back(static_cast<int>(v));
+    for (auto v : bw) weights_vt.push_back(v);
+
+    auto ji = binding.CreateJointIndicesPrimvar(/*constant=*/false, bpv);
+    ji.Set(indices_vt);
+    auto jw = binding.CreateJointWeightsPrimvar(/*constant=*/false, bpv);
+    jw.Set(weights_vt);
+
+    // Identity geomBindTransform — skel-bind-space matches mesh-local
+    // space for the MVP. Avatars that need a non-identity bind matrix
+    // can set it on the idtx_mesh in a future API extension.
+    binding.CreateGeomBindTransformAttr().Set(pxr::GfMatrix4d(1.0));
+}
+
 }  // namespace idtx::core::detail
 
 extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
@@ -285,8 +331,11 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
         stage, pxr::SdfPath::AbsoluteRootPath(), avatar);
     stage->SetDefaultPrim(stage->GetPrimAtPath(root_path));
 
-    idtx::core::detail::emit_skeleton(
+    pxr::SdfPath skel_root_path = idtx::core::detail::emit_skeleton(
         stage, root_path, idtx_avatar_get_skeleton(avatar));
+    pxr::SdfPath skel_path = skel_root_path.IsEmpty()
+        ? pxr::SdfPath()
+        : skel_root_path.AppendChild(pxr::TfToken("Skeleton"));
 
     // Materials live in a scope so they can be referenced by mesh
     // binding by path. Emit them first, then meshes pick them up.
@@ -317,6 +366,9 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
                     stage, material_paths[mat_index]);
                 pxr::UsdShadeMaterialBindingAPI(mesh_prim).Bind(mat);
             }
+
+            idtx::core::detail::bind_mesh_to_skeleton(
+                stage, mp, skel_path, idtx_avatar_get_mesh(avatar, i));
         }
     }
 
