@@ -21,6 +21,8 @@ struct idtx_avatar
     std::vector<idtx_mesh_t*>     meshes;
     std::vector<int32_t>          mesh_material;   // parallel to meshes
     std::vector<idtx_material_t*> materials;
+    std::vector<idtx_spring_chain_t*>    spring_chains;
+    std::vector<idtx_spring_collider_t*> spring_colliders;
 };
 
 extern "C" IDTX_CORE_API idtx_avatar_t* idtx_avatar_create(void)
@@ -34,6 +36,8 @@ extern "C" IDTX_CORE_API void idtx_avatar_destroy(idtx_avatar_t* avatar)
     if (avatar->skeleton != nullptr) idtx_skeleton_destroy(avatar->skeleton);
     for (auto* m : avatar->meshes)    if (m != nullptr) idtx_mesh_destroy(m);
     for (auto* mat : avatar->materials) if (mat != nullptr) idtx_material_destroy(mat);
+    for (auto* sc : avatar->spring_chains)    if (sc != nullptr) idtx_spring_chain_destroy(sc);
+    for (auto* col : avatar->spring_colliders) if (col != nullptr) idtx_spring_collider_destroy(col);
     delete avatar;
 }
 
@@ -122,4 +126,34 @@ extern "C" IDTX_CORE_API idtx_material_t* idtx_avatar_get_material(const idtx_av
 {
     if (avatar == nullptr || index < 0 || index >= static_cast<int32_t>(avatar->materials.size())) return nullptr;
     return avatar->materials[index];
+}
+
+extern "C" IDTX_CORE_API int32_t idtx_avatar_add_spring_chain(idtx_avatar_t* avatar, idtx_spring_chain_t* chain)
+{
+    if (avatar == nullptr) return -1;
+    int32_t idx = static_cast<int32_t>(avatar->spring_chains.size());
+    avatar->spring_chains.push_back(chain);
+    return idx;
+}
+extern "C" IDTX_CORE_API int32_t idtx_avatar_get_spring_chain_count(const idtx_avatar_t* avatar)
+{ return avatar ? static_cast<int32_t>(avatar->spring_chains.size()) : 0; }
+extern "C" IDTX_CORE_API idtx_spring_chain_t* idtx_avatar_get_spring_chain(const idtx_avatar_t* avatar, int32_t index)
+{
+    if (!avatar || index < 0 || index >= static_cast<int32_t>(avatar->spring_chains.size())) return nullptr;
+    return avatar->spring_chains[index];
+}
+
+extern "C" IDTX_CORE_API int32_t idtx_avatar_add_spring_collider(idtx_avatar_t* avatar, idtx_spring_collider_t* col)
+{
+    if (avatar == nullptr) return -1;
+    int32_t idx = static_cast<int32_t>(avatar->spring_colliders.size());
+    avatar->spring_colliders.push_back(col);
+    return idx;
+}
+extern "C" IDTX_CORE_API int32_t idtx_avatar_get_spring_collider_count(const idtx_avatar_t* avatar)
+{ return avatar ? static_cast<int32_t>(avatar->spring_colliders.size()) : 0; }
+extern "C" IDTX_CORE_API idtx_spring_collider_t* idtx_avatar_get_spring_collider(const idtx_avatar_t* avatar, int32_t index)
+{
+    if (!avatar || index < 0 || index >= static_cast<int32_t>(avatar->spring_colliders.size())) return nullptr;
+    return avatar->spring_colliders[index];
 }

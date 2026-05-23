@@ -38,10 +38,18 @@ IDTX_CORE_API const char* idtx_core_version(void);
 // layout is private to libidtx_core and may change without breaking ABI.
 // ---------------------------------------------------------------------
 
-typedef struct idtx_skeleton  idtx_skeleton_t;
-typedef struct idtx_mesh      idtx_mesh_t;
-typedef struct idtx_material  idtx_material_t;
-typedef struct idtx_avatar    idtx_avatar_t;
+typedef struct idtx_skeleton         idtx_skeleton_t;
+typedef struct idtx_mesh             idtx_mesh_t;
+typedef struct idtx_material         idtx_material_t;
+typedef struct idtx_spring_chain     idtx_spring_chain_t;
+typedef struct idtx_spring_collider  idtx_spring_collider_t;
+typedef struct idtx_avatar           idtx_avatar_t;
+
+typedef enum idtx_collider_shape
+{
+    IDTX_COLLIDER_SPHERE  = 0,
+    IDTX_COLLIDER_CAPSULE = 1,
+} idtx_collider_shape_t;
 
 // ---------------------------------------------------------------------
 // idtx_skeleton — bone hierarchy with rest + bind transforms.
@@ -223,6 +231,84 @@ IDTX_CORE_API int32_t idtx_avatar_get_mesh_material(const idtx_avatar_t* avatar,
 IDTX_CORE_API int32_t idtx_avatar_add_material(idtx_avatar_t* avatar, idtx_material_t* mat);
 IDTX_CORE_API int32_t idtx_avatar_get_material_count(const idtx_avatar_t* avatar);
 IDTX_CORE_API idtx_material_t* idtx_avatar_get_material(const idtx_avatar_t* avatar, int32_t index);
+
+// ---------------------------------------------------------------------
+// idtx_spring_chain — one VRMC_springBone joint chain. Joints reference
+// bone indices in the avatar's skeleton. Dynamics fields match VRM 1.0:
+//   stiffness     ([0..1+], how aggressively the chain returns to rest)
+//   drag          ([0..1],  per-frame velocity damping)
+//   gravity_power ([0..],   gravity scale; gravity_dir is the unit dir)
+//   hit_radius    (meters,  collider intersection radius for the joint)
+// ---------------------------------------------------------------------
+
+IDTX_CORE_API idtx_spring_chain_t* idtx_spring_chain_create(void);
+IDTX_CORE_API void                 idtx_spring_chain_destroy(idtx_spring_chain_t* chain);
+
+IDTX_CORE_API void        idtx_spring_chain_set_name(idtx_spring_chain_t* chain, const char* name);
+IDTX_CORE_API const char* idtx_spring_chain_get_name(const idtx_spring_chain_t* chain);
+
+IDTX_CORE_API void idtx_spring_chain_set_joints(
+    idtx_spring_chain_t* chain,
+    int32_t count,
+    const int32_t* bone_indices);   // indices into the avatar's idtx_skeleton
+
+IDTX_CORE_API void idtx_spring_chain_set_dynamics(
+    idtx_spring_chain_t* chain,
+    float stiffness,
+    float drag,
+    float gravity_power,
+    float hit_radius);
+
+IDTX_CORE_API void idtx_spring_chain_set_gravity_dir(
+    idtx_spring_chain_t* chain, float x, float y, float z);
+
+// Append a collider-index reference (into the avatar's spring_collider
+// list). Multiple colliders per chain are allowed.
+IDTX_CORE_API void idtx_spring_chain_add_collider(idtx_spring_chain_t* chain, int32_t collider_index);
+
+IDTX_CORE_API int32_t idtx_spring_chain_get_joint_count(const idtx_spring_chain_t* chain);
+IDTX_CORE_API int32_t idtx_spring_chain_get_joint(const idtx_spring_chain_t* chain, int32_t index);
+IDTX_CORE_API float   idtx_spring_chain_get_stiffness(const idtx_spring_chain_t* chain);
+IDTX_CORE_API float   idtx_spring_chain_get_drag(const idtx_spring_chain_t* chain);
+IDTX_CORE_API float   idtx_spring_chain_get_gravity_power(const idtx_spring_chain_t* chain);
+IDTX_CORE_API float   idtx_spring_chain_get_hit_radius(const idtx_spring_chain_t* chain);
+IDTX_CORE_API void    idtx_spring_chain_get_gravity_dir(const idtx_spring_chain_t* chain, float out_xyz[3]);
+IDTX_CORE_API int32_t idtx_spring_chain_get_collider_count(const idtx_spring_chain_t* chain);
+IDTX_CORE_API int32_t idtx_spring_chain_get_collider(const idtx_spring_chain_t* chain, int32_t index);
+
+// ---------------------------------------------------------------------
+// idtx_spring_collider — one VRMC_springBone collider primitive.
+// Sphere uses offset + radius. Capsule adds a tail point (offset to
+// tail forms the line segment, radius is the swept radius).
+// ---------------------------------------------------------------------
+
+IDTX_CORE_API idtx_spring_collider_t* idtx_spring_collider_create(void);
+IDTX_CORE_API void                    idtx_spring_collider_destroy(idtx_spring_collider_t* col);
+
+IDTX_CORE_API void        idtx_spring_collider_set_name(idtx_spring_collider_t* col, const char* name);
+IDTX_CORE_API const char* idtx_spring_collider_get_name(const idtx_spring_collider_t* col);
+
+IDTX_CORE_API void idtx_spring_collider_set_attached_bone(idtx_spring_collider_t* col, int32_t bone_index);
+IDTX_CORE_API int32_t idtx_spring_collider_get_attached_bone(const idtx_spring_collider_t* col);
+
+IDTX_CORE_API void idtx_spring_collider_set_shape(idtx_spring_collider_t* col, idtx_collider_shape_t shape);
+IDTX_CORE_API idtx_collider_shape_t idtx_spring_collider_get_shape(const idtx_spring_collider_t* col);
+
+IDTX_CORE_API void idtx_spring_collider_set_offset(idtx_spring_collider_t* col, float x, float y, float z);
+IDTX_CORE_API void idtx_spring_collider_get_offset(const idtx_spring_collider_t* col, float out_xyz[3]);
+IDTX_CORE_API void idtx_spring_collider_set_radius(idtx_spring_collider_t* col, float radius);
+IDTX_CORE_API float idtx_spring_collider_get_radius(const idtx_spring_collider_t* col);
+IDTX_CORE_API void idtx_spring_collider_set_tail(idtx_spring_collider_t* col, float x, float y, float z);
+IDTX_CORE_API void idtx_spring_collider_get_tail(const idtx_spring_collider_t* col, float out_xyz[3]);
+
+// Avatar-level spring chain / collider lists.
+IDTX_CORE_API int32_t idtx_avatar_add_spring_chain(idtx_avatar_t* avatar, idtx_spring_chain_t* chain);
+IDTX_CORE_API int32_t idtx_avatar_get_spring_chain_count(const idtx_avatar_t* avatar);
+IDTX_CORE_API idtx_spring_chain_t* idtx_avatar_get_spring_chain(const idtx_avatar_t* avatar, int32_t index);
+
+IDTX_CORE_API int32_t idtx_avatar_add_spring_collider(idtx_avatar_t* avatar, idtx_spring_collider_t* col);
+IDTX_CORE_API int32_t idtx_avatar_get_spring_collider_count(const idtx_avatar_t* avatar);
+IDTX_CORE_API idtx_spring_collider_t* idtx_avatar_get_spring_collider(const idtx_avatar_t* avatar, int32_t index);
 
 // ---------------------------------------------------------------------
 // Top-level I/O entry points.
