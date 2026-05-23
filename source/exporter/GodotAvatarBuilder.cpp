@@ -19,6 +19,8 @@
 #include <godot_cpp/classes/spring_bone_collision_capsule3d.hpp>
 #include <godot_cpp/classes/spring_bone_collision_sphere3d.hpp>
 #include <godot_cpp/classes/spring_bone_simulator3d.hpp>
+#include <godot_cpp/classes/shader.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 #include <godot_cpp/core/object.hpp>
 #include <godot_cpp/variant/node_path.hpp>
@@ -236,24 +238,83 @@ static ::idtx_mesh_t* BuildMeshFromSurface(
     return out;
 }
 
-// Translate a Godot Material into an idtx_material_t (StandardMaterial3D
-// fields only for the MVP; MToon detection is a future cycle).
+// MToon 0.x detection on a ShaderMaterial. godot-vrm 0.x imports
+// produce a ShaderMaterial bound to its in-house MToon shader, whose
+// uniforms follow the original UniVRM MToon 0.x naming convention
+// (_Color / _MainTex / _ShadeColor / _RimColor / _OutlineWidth / etc).
+// We detect via the presence of any one of those uniforms.
+static bool LooksLikeMToon0(godot::ShaderMaterial* sm)
+{
+    if (sm == nullptr) return false;
+    // Probe via Variant API — get_shader_parameter returns null
+    // Variant for unknown uniforms.
+    static const char* const probes[] = {
+        "_ShadeColor", "_RimColor", "_OutlineWidth", "_ShadeShift", "_ShadeToony"
+    };
+    for (auto const* k : probes) {
+        if (sm->get_shader_parameter(k).get_type() != godot::Variant::NIL) return true;
+    }
+    return false;
+}
+
+// Read MToon 0.x uniforms off a ShaderMaterial and populate the
+// MToon 1.0 fields on the idtx_material handle. Uniform name map
+// matches the UniVRM 0.x → 1.0 migration tool's; godot-vrm preserves
+// the same names verbatim. Unmapped uniforms are silently ignored
+// rather than emit warnings — partial-MToon avatars still round-trip.
+static void StampMToonFromShader(godot::ShaderMaterial* sm, ::idtx_material_t* out)
+{
+    if (sm == nullptr || out == nullptr) return;
+
+    auto var = [&](const char* k) { return sm->get_shader_parameter(k); };
+    auto has = [&](const char* k) { return var(k).get_type() != godot::Variant::NIL; };
+
+    // _ShadeColor (Color)
+    if (has("_ShadeColor")) {
+        godot::Color c = var("_ShadeColor");
+        idtx_material_set_mtoon_shade_color(out, c.r, c.g, c.b);
+    }
+    // _RimColor (Color) — MToon 1.0 parametricRimColorFactor (RGB only)
+    if (has("_RimColor")) {
+        godot::Color c = var("_RimColor");
+        idtx_material_set_mtoon_rim_color(out, c.r, c.g, c.b);
+    }
+    // _OutlineWidth (float) — MToon 1.0 outlineWidthFactor (meters)
+    if (has("_OutlineWidth")) {
+        idtx_material_set_mtoon_outline_width(out, (float)(double)var("_OutlineWidth"));
+    }
+    // PBR fallbacks come from _Color (baseColor) since BuildMaterial's
+    // StandardMaterial3D path didn't run for ShaderMaterials.
+    if (has("_Color")) {
+        godot::Color c = var("_Color");
+        idtx_material_set_base_color(out, c.r, c.g, c.b, c.a);
+    }
+}
+
+// Translate a Godot Material into an idtx_material_t. Handles
+// StandardMaterial3D (PBR baseline) and ShaderMaterial-backed MToon
+// 0.x materials emitted by godot-vrm 0.x. Unknown material types
+// produce a default idtx_material.
 static ::idtx_material_t* BuildMaterial(godot::Ref<godot::Material> const& mat)
 {
     if (mat.is_null()) return nullptr;
-    auto* std_mat = godot::Object::cast_to<godot::StandardMaterial3D>(mat.ptr());
     ::idtx_material_t* out = ::idtx_material_create();
-    if (std_mat != nullptr) {
-        godot::String name = std_mat->get_name();
-        if (name.is_empty()) name = godot::String("Material");
-        idtx_material_set_name(out, name.utf8().get_data());
+    godot::String name = mat->get_name();
+    if (name.is_empty()) name = godot::String("Material");
+    idtx_material_set_name(out, name.utf8().get_data());
 
+    if (auto* std_mat = godot::Object::cast_to<godot::StandardMaterial3D>(mat.ptr())) {
         godot::Color albedo = std_mat->get_albedo();
         idtx_material_set_base_color(out, albedo.r, albedo.g, albedo.b, albedo.a);
         idtx_material_set_metallic(out, std_mat->get_metallic());
         idtx_material_set_roughness(out, std_mat->get_roughness());
-    } else {
-        idtx_material_set_name(out, "Material");
+    } else if (auto* shader_mat = godot::Object::cast_to<godot::ShaderMaterial>(mat.ptr())) {
+        if (LooksLikeMToon0(shader_mat)) {
+            StampMToonFromShader(shader_mat, out);
+        }
+        // Other ShaderMaterials fall through with idtx_material defaults
+        // (white base color, metallic=0, roughness=0.5). Caller can
+        // override later via the C ABI if needed.
     }
     return out;
 }
