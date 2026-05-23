@@ -10,10 +10,16 @@
 #include "idtx_core/internal/usd_helpers.h"
 
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/vec2f.h>
+#include <pxr/base/gf/vec3f.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/valueTypeName.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/primvarsAPI.h>
+#include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdGeom/xformOp.h>
 #include <pxr/usd/usdSkel/root.h>
@@ -95,6 +101,109 @@ static pxr::SdfPath emit_skeleton(
     return root_path;
 }
 
+// Emit one UsdGeomMesh prim for `mesh` under `parent_path`. Returns
+// the mesh prim path. `siblings` tracks already-used names so multi-
+// mesh avatars don't collide on identically-named meshes.
+static pxr::SdfPath emit_mesh(
+    pxr::UsdStageRefPtr const& stage,
+    pxr::SdfPath const& parent_path,
+    idtx_mesh_t const* mesh,
+    std::set<std::string>& siblings)
+{
+    if (mesh == nullptr) return pxr::SdfPath();
+    int32_t vc = idtx_mesh_get_vertex_count(mesh);
+    int32_t ic = idtx_mesh_get_index_count(mesh);
+    if (vc <= 0 || ic <= 0) return pxr::SdfPath();
+
+    std::string desired = sanitise_prim_name(idtx_mesh_get_name(mesh));
+    if (desired.empty()) desired = "Mesh";
+    pxr::SdfPath mesh_path = unique_child_path(parent_path, desired, siblings);
+    pxr::UsdGeomMesh usd_mesh = pxr::UsdGeomMesh::Define(stage, mesh_path);
+
+    // Positions
+    std::vector<float> positions(static_cast<size_t>(vc) * 3);
+    idtx_mesh_get_positions(mesh, positions.data());
+    pxr::VtArray<pxr::GfVec3f> points;
+    points.reserve(vc);
+    for (int32_t i = 0; i < vc; ++i) {
+        points.push_back(pxr::GfVec3f(
+            positions[i * 3 + 0],
+            positions[i * 3 + 1],
+            positions[i * 3 + 2]));
+    }
+    usd_mesh.CreatePointsAttr().Set(points);
+
+    // Indices — assume triangle list; faceVertexCounts is all 3's.
+    int32_t face_count = ic / 3;
+    pxr::VtArray<int> face_vertex_counts(face_count, 3);
+    pxr::VtArray<int> face_vertex_indices;
+    face_vertex_indices.reserve(ic);
+    {
+        std::vector<int32_t> indices(static_cast<size_t>(ic));
+        idtx_mesh_get_indices(mesh, indices.data());
+        for (int32_t i = 0; i < ic; ++i) {
+            face_vertex_indices.push_back(static_cast<int>(indices[i]));
+        }
+    }
+    usd_mesh.CreateFaceVertexCountsAttr().Set(face_vertex_counts);
+    usd_mesh.CreateFaceVertexIndicesAttr().Set(face_vertex_indices);
+
+    // Normals (vertex-interpolated)
+    if (idtx_mesh_has_normals(mesh)) {
+        std::vector<float> n_buf(static_cast<size_t>(vc) * 3);
+        idtx_mesh_get_normals(mesh, n_buf.data());
+        pxr::VtArray<pxr::GfVec3f> normals;
+        normals.reserve(vc);
+        for (int32_t i = 0; i < vc; ++i) {
+            normals.push_back(pxr::GfVec3f(
+                n_buf[i * 3 + 0],
+                n_buf[i * 3 + 1],
+                n_buf[i * 3 + 2]));
+        }
+        auto attr = usd_mesh.CreateNormalsAttr();
+        attr.Set(normals);
+        usd_mesh.SetNormalsInterpolation(pxr::UsdGeomTokens->vertex);
+    }
+
+    // UVs as primvar:st (vertex-interpolated)
+    if (idtx_mesh_has_uvs(mesh)) {
+        std::vector<float> uv_buf(static_cast<size_t>(vc) * 2);
+        idtx_mesh_get_uvs(mesh, uv_buf.data());
+        pxr::VtArray<pxr::GfVec2f> uvs;
+        uvs.reserve(vc);
+        for (int32_t i = 0; i < vc; ++i) {
+            uvs.push_back(pxr::GfVec2f(uv_buf[i * 2 + 0], uv_buf[i * 2 + 1]));
+        }
+        pxr::UsdGeomPrimvarsAPI pvapi(usd_mesh.GetPrim());
+        auto st = pvapi.CreatePrimvar(
+            pxr::TfToken("st"),
+            pxr::SdfValueTypeNames->TexCoord2fArray,
+            pxr::UsdGeomTokens->vertex);
+        st.Set(uvs);
+    }
+
+    // Display color (per-vertex)
+    if (idtx_mesh_has_colors(mesh)) {
+        std::vector<float> c_buf(static_cast<size_t>(vc) * 4);
+        idtx_mesh_get_colors(mesh, c_buf.data());
+        pxr::VtArray<pxr::GfVec3f> rgb;
+        rgb.reserve(vc);
+        for (int32_t i = 0; i < vc; ++i) {
+            // Drop alpha — USD displayColor is RGB; alpha would go in
+            // displayOpacity if needed (omitted for the MVP).
+            rgb.push_back(pxr::GfVec3f(
+                c_buf[i * 4 + 0],
+                c_buf[i * 4 + 1],
+                c_buf[i * 4 + 2]));
+        }
+        auto attr = usd_mesh.CreateDisplayColorAttr();
+        attr.Set(rgb);
+        usd_mesh.SetNormalsInterpolation(pxr::UsdGeomTokens->vertex);
+    }
+
+    return mesh_path;
+}
+
 }  // namespace idtx::core::detail
 
 extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
@@ -115,6 +224,15 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
 
     idtx::core::detail::emit_skeleton(
         stage, root_path, idtx_avatar_get_skeleton(avatar));
+
+    {
+        std::set<std::string> mesh_siblings;
+        int32_t mesh_count = idtx_avatar_get_mesh_count(avatar);
+        for (int32_t i = 0; i < mesh_count; ++i) {
+            idtx::core::detail::emit_mesh(
+                stage, root_path, idtx_avatar_get_mesh(avatar, i), mesh_siblings);
+        }
+    }
 
     if (!stage->GetRootLayer()->Save()) return 3;
     return 0;
