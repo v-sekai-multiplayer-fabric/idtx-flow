@@ -36,6 +36,7 @@
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 
+#include <cmath>
 #include <unordered_map>
 #include <vector>
 
@@ -132,13 +133,74 @@ static ::idtx_mesh_t* BuildMeshFromSurface(
     godot::PackedVector3Array verts   = arrays[godot::Mesh::ARRAY_VERTEX];
     godot::PackedInt32Array   indices = arrays[godot::Mesh::ARRAY_INDEX];
     if (verts.size() == 0) return nullptr;
-    // CSG bakes often produce un-indexed triangle soup (one vertex
-    // per face-corner, no separate index buffer). Synthesise the
-    // identity index buffer [0, 1, 2, ..., N-1] so the downstream
-    // USD writer sees the same shape regardless of source.
+    // CSG bakes produce UN-INDEXED triangle soup: each triangle has
+    // its own three vertex slots (no sharing between adjacent
+    // faces). Synthesising an identity [0..N-1] index buffer keeps
+    // the geometry but breaks downstream tris-to-quads (which
+    // relies on shared edges = shared vertex indices). Weld
+    // identical positions FIRST so adjacent triangles share corner
+    // indices, then build the index buffer over the welded array.
     if (indices.size() == 0) {
+        // Hash positions with a small grid quantum so floating-point
+        // noise on perfectly-coincident corners (CSG output is
+        // exact-coincident, but rounding can introduce ~ULP drift)
+        // doesn't defeat the weld.
+        constexpr float kWeldQuantum = 1e-6f;
+        struct Key { int32_t x, y, z; };
+        struct KeyHash {
+            size_t operator()(Key const& k) const noexcept {
+                size_t h = std::hash<int32_t>()(k.x);
+                h ^= std::hash<int32_t>()(k.y) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                h ^= std::hash<int32_t>()(k.z) + 0x9e3779b9 + (h << 6) + (h >> 2);
+                return h;
+            }
+        };
+        struct KeyEq {
+            bool operator()(Key const& a, Key const& b) const noexcept {
+                return a.x == b.x && a.y == b.y && a.z == b.z;
+            }
+        };
+        std::unordered_map<Key, int32_t, KeyHash, KeyEq> pos_to_new;
+        pos_to_new.reserve(verts.size());
+        godot::PackedVector3Array welded_verts;
+        std::vector<int32_t> remap(verts.size());
+        for (int i = 0; i < verts.size(); ++i) {
+            godot::Vector3 p = verts[i];
+            Key k{ static_cast<int32_t>(std::lround(p.x / kWeldQuantum)),
+                   static_cast<int32_t>(std::lround(p.y / kWeldQuantum)),
+                   static_cast<int32_t>(std::lround(p.z / kWeldQuantum)) };
+            auto it = pos_to_new.find(k);
+            if (it == pos_to_new.end()) {
+                int32_t new_idx = static_cast<int32_t>(welded_verts.size());
+                welded_verts.push_back(p);
+                pos_to_new.emplace(k, new_idx);
+                remap[i] = new_idx;
+            } else {
+                remap[i] = it->second;
+            }
+        }
+        // Identity index buffer over the ORIGINAL ordering, then
+        // remapped through the weld table — preserves face ordering.
         indices.resize(verts.size());
-        for (int i = 0; i < verts.size(); ++i) indices[i] = i;
+        for (int i = 0; i < verts.size(); ++i) indices[i] = remap[i];
+        // Replace verts + drop the per-vertex normal/uv arrays
+        // (their interleave matches the old vertex ordering; on the
+        // un-indexed → indexed transition they'd point at wrong
+        // post-weld vertices). The USD writer doesn't currently
+        // emit normals/uvs for CSG-derived meshes — see follow-up.
+        verts = welded_verts;
+        // Strip the conflicting per-vertex attribute arrays so the
+        // logic below doesn't try to read them with mismatched
+        // counts.
+        if (arrays.size() > godot::Mesh::ARRAY_NORMAL) {
+            arrays[godot::Mesh::ARRAY_NORMAL] = godot::Variant();
+        }
+        if (arrays.size() > godot::Mesh::ARRAY_TEX_UV) {
+            arrays[godot::Mesh::ARRAY_TEX_UV] = godot::Variant();
+        }
+        if (arrays.size() > godot::Mesh::ARRAY_COLOR) {
+            arrays[godot::Mesh::ARRAY_COLOR] = godot::Variant();
+        }
     }
 
     ::idtx_mesh_t* out = ::idtx_mesh_create();

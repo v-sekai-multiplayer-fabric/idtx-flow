@@ -18,5 +18,19 @@
 
 namespace idtxflow::exporter
 {
-    bool ExportSceneToFile(godot::Node3D* root, godot::String const& path);
+    /// Optional knobs passed from the Godot-side caller (e.g.
+    /// IDTXFlowExporter) into the C++ pipeline.
+    struct ExportOptions {
+        /// When true, run idtx_mesh_reconstruct_quads on each mesh
+        /// after building the avatar handle, before idtx_core
+        /// emits the USD stage. Quads land in `faceVertexCounts`
+        /// on the USD side.
+        bool  reconstruct_quads                       = false;
+        float reconstruct_quads_planarity_max_degrees = 5.0f;
+    };
+
+    bool ExportSceneToFile(
+        godot::Node3D* root,
+        godot::String const& path,
+        ExportOptions const& opts = {});
 }

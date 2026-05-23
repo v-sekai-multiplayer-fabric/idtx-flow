@@ -97,6 +97,12 @@ func _init() -> void:
 	# the export, then tear down.
 	get_root().add_child(root)
 	var exporter := IDTXFlowExporter.new()
+	# Tris-to-quads pass is OFF by default in the exporter (round-
+	# trip fixtures expect tri-soup). CSG's bake is pure triangle
+	# soup — turn it on explicitly for this demo so adjacent
+	# coplanar triangles fold into quads on the USD side.
+	exporter.set_reconstruct_quads(true)
+	exporter.set_reconstruct_quads_planarity_max_degrees(5.0)
 	var ok: bool = exporter.export_scene(root, out_path)
 	get_root().remove_child(root)
 	root.queue_free()

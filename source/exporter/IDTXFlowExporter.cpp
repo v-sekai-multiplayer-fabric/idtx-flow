@@ -18,7 +18,10 @@ bool IDTXFlowExporter::export_scene(godot::Node3D* root, godot::String const& pa
     if (godot::ProjectSettings* ps = godot::ProjectSettings::get_singleton()) {
         real_path = ps->globalize_path(path);
     }
-    return idtxflow::exporter::ExportSceneToFile(root, real_path);
+    idtxflow::exporter::ExportOptions opts;
+    opts.reconstruct_quads                       = _reconstruct_quads;
+    opts.reconstruct_quads_planarity_max_degrees = _reconstruct_quads_planarity_max_degrees;
+    return idtxflow::exporter::ExportSceneToFile(root, real_path, opts);
 }
 
 void IDTXFlowExporter::_bind_methods()
@@ -26,4 +29,18 @@ void IDTXFlowExporter::_bind_methods()
     godot::ClassDB::bind_method(
         godot::D_METHOD("export_scene", "root", "path"),
         &IDTXFlowExporter::export_scene);
+
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("set_reconstruct_quads", "enabled"),
+        &IDTXFlowExporter::set_reconstruct_quads);
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("is_reconstruct_quads"),
+        &IDTXFlowExporter::is_reconstruct_quads);
+
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("set_reconstruct_quads_planarity_max_degrees", "degrees"),
+        &IDTXFlowExporter::set_reconstruct_quads_planarity_max_degrees);
+    godot::ClassDB::bind_method(
+        godot::D_METHOD("get_reconstruct_quads_planarity_max_degrees"),
+        &IDTXFlowExporter::get_reconstruct_quads_planarity_max_degrees);
 }
