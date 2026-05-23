@@ -44,6 +44,10 @@ def _build_idtx_core(env):
         # (MIT). Used by core/src/idtx_vrm_import.cpp for the VRM read
         # direction.
         "libs/cgltf",
+        # jsmn single-header JSON tokenizer (MIT). Used to parse the
+        # raw extension JSON blobs cgltf surfaces but doesn't decode
+        # (VRMC_springBone, VRMC_vrm humanoid, etc).
+        "libs/jsmn",
     ])
 
     core_env.Append(LIBPATH=[
@@ -87,6 +91,7 @@ def _build_idtx_core(env):
         "core/src/idtx_import_usd.cpp",
         "core/src/idtx_vrm.cpp",
         "core/src/idtx_vrm_import.cpp",
+        "core/src/idtx_vrm_springbone_parse.cpp",
         "core/src/vrm_humanoid_bones.cpp",
     ]
 
