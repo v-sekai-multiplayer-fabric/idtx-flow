@@ -219,8 +219,17 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             j.key("generator"); j.string("idtx-flow / libidtx_core");
         j.end_object();
 
+        // extensionsUsed — VRMC_vrm is unconditional; VRMC_materials_mtoon
+        // is added only if any avatar material is MToon-flagged.
+        int32_t mat_count_total = idtx_avatar_get_material_count(avatar);
+        bool any_mtoon = false;
+        for (int32_t mi = 0; mi < mat_count_total; ++mi) {
+            auto* mat = idtx_avatar_get_material(avatar, mi);
+            if (mat != nullptr && idtx_material_is_mtoon(mat)) { any_mtoon = true; break; }
+        }
         j.key("extensionsUsed"); j.begin_array();
             j.string("VRMC_vrm");
+            if (any_mtoon) j.string("VRMC_materials_mtoon");
         j.end_array();
 
         // Scene + scenes
@@ -295,9 +304,56 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                             if (mp.indices_accessor >= 0) {
                                 j.key("indices"); j.integer(mp.indices_accessor);
                             }
+                            int32_t mat_index = idtx_avatar_get_mesh_material(avatar, mi);
+                            if (mat_index >= 0 && mat_index < mat_count_total) {
+                                j.key("material"); j.integer(mat_index);
+                            }
                             j.key("mode"); j.integer(4);  // TRIANGLES
                         j.end_object();
                     j.end_array();
+                j.end_object();
+            }
+            j.end_array();
+        }
+
+        // materials
+        if (mat_count_total > 0) {
+            j.key("materials"); j.begin_array();
+            for (int32_t mi = 0; mi < mat_count_total; ++mi) {
+                auto* mat = idtx_avatar_get_material(avatar, mi);
+                j.begin_object();
+                    if (mat != nullptr) {
+                        j.key("name"); j.string(idtx_material_get_name(mat));
+                        float rgba[4]; idtx_material_get_base_color(mat, rgba);
+                        j.key("pbrMetallicRoughness"); j.begin_object();
+                            j.key("baseColorFactor"); j.float_array(rgba, 4);
+                            j.key("metallicFactor");  j.number(idtx_material_get_metallic(mat));
+                            j.key("roughnessFactor"); j.number(idtx_material_get_roughness(mat));
+                        j.end_object();
+
+                        idtx_alpha_mode_t am = idtx_material_get_alpha_mode(mat);
+                        if (am == IDTX_ALPHA_MASK) {
+                            j.key("alphaMode"); j.string("MASK");
+                            j.key("alphaCutoff"); j.number(idtx_material_get_alpha_cutoff(mat));
+                        } else if (am == IDTX_ALPHA_BLEND) {
+                            j.key("alphaMode"); j.string("BLEND");
+                        }
+
+                        if (idtx_material_is_mtoon(mat)) {
+                            j.key("extensions"); j.begin_object();
+                                j.key("VRMC_materials_mtoon"); j.begin_object();
+                                    j.key("specVersion"); j.string("1.0");
+                                    float shade[3]; idtx_material_get_mtoon_shade_color(mat, shade);
+                                    float rim[3];   idtx_material_get_mtoon_rim_color(mat, rim);
+                                    j.key("shadeColorFactor");        j.float_array(shade, 3);
+                                    j.key("parametricRimColorFactor"); j.float_array(rim, 3);
+                                    j.key("outlineWidthMode"); j.string("worldCoordinates");
+                                    j.key("outlineWidthFactor");
+                                    j.number(idtx_material_get_mtoon_outline_width(mat));
+                                j.end_object();
+                            j.end_object();
+                        }
+                    }
                 j.end_object();
             }
             j.end_array();
