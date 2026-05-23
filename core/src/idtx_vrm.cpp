@@ -690,12 +690,30 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
         // skins — single skin covering all bones. inverseBindMatrices
         // accessor was computed before the JSON emission started so
         // accessors[] already contains it.
+        //
+        // `skin.skeleton` is OPTIONAL per glTF 2.0 (defaulting to "the
+        // joints with no parent in the joint array are the roots"),
+        // but Blender's glTF importer historically requires it for
+        // proper armature reconstruction — without it, Blender imports
+        // every joint as a stand-alone armature root with no
+        // hierarchy. VRM 1.0 also recommends it. Set it to the
+        // topmost joint (idtx_skeleton's bone[0], because UsdSkel
+        // guarantees parents-precede-children in joints[] — the first
+        // bone is always the unique root).
         if (bone_count > 0) {
+            int32_t skel_root_bone = 0;
+            for (int32_t i = 0; i < bone_count; ++i) {
+                if (idtx_skeleton_get_bone_parent(skel, i) < 0) {
+                    skel_root_bone = i;
+                    break;
+                }
+            }
             j.key("skins"); j.begin_array();
                 j.begin_object();
                     if (ibm_accessor_index >= 0) {
                         j.key("inverseBindMatrices"); j.integer(ibm_accessor_index);
                     }
+                    j.key("skeleton"); j.integer(bone_node_index(skel_root_bone));
                     j.key("joints"); j.begin_array();
                         for (int32_t i = 0; i < bone_count; ++i) j.integer(bone_node_index(i));
                     j.end_array();
