@@ -241,6 +241,32 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
         return (bone < 0) ? root_node_index : (1 + bone);
     };
 
+    int32_t mat_count_total = idtx_avatar_get_material_count(avatar);
+
+    // Texture deduplication: each unique URI gets one image / one
+    // texture entry. Materials reference textures by index. Empty
+    // strings ("") mean "no texture" and don't get registered.
+    std::vector<std::string> texture_uris;
+    auto register_texture = [&](const char* uri) -> int32_t {
+        if (uri == nullptr || uri[0] == '\0') return -1;
+        for (size_t i = 0; i < texture_uris.size(); ++i) {
+            if (texture_uris[i] == uri) return static_cast<int32_t>(i);
+        }
+        texture_uris.emplace_back(uri);
+        return static_cast<int32_t>(texture_uris.size() - 1);
+    };
+
+    // Pre-scan materials to register all referenced textures so the
+    // material output loop can resolve indices.
+    std::vector<int32_t> mat_base_tex(mat_count_total, -1);
+    std::vector<int32_t> mat_normal_tex(mat_count_total, -1);
+    for (int32_t mi = 0; mi < mat_count_total; ++mi) {
+        auto* mat = idtx_avatar_get_material(avatar, mi);
+        if (mat == nullptr) continue;
+        mat_base_tex[mi]   = register_texture(idtx_material_get_base_color_texture(mat));
+        mat_normal_tex[mi] = register_texture(idtx_material_get_normal_texture(mat));
+    }
+
     // For humanoid mapping, walk the bones once to find which bone
     // (if any) carries each VRM 1.0 humanoid name.
     std::unordered_map<std::string, int32_t> humanoid_to_bone;
@@ -262,7 +288,6 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
 
         // extensionsUsed — VRMC_vrm is unconditional; VRMC_materials_mtoon
         // is added only if any avatar material is MToon-flagged.
-        int32_t mat_count_total = idtx_avatar_get_material_count(avatar);
         bool any_mtoon = false;
         for (int32_t mi = 0; mi < mat_count_total; ++mi) {
             auto* mat = idtx_avatar_get_material(avatar, mi);
@@ -405,7 +430,17 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                             j.key("baseColorFactor"); j.float_array(rgba, 4);
                             j.key("metallicFactor");  j.number(idtx_material_get_metallic(mat));
                             j.key("roughnessFactor"); j.number(idtx_material_get_roughness(mat));
+                            if (mat_base_tex[mi] >= 0) {
+                                j.key("baseColorTexture"); j.begin_object();
+                                    j.key("index"); j.integer(mat_base_tex[mi]);
+                                j.end_object();
+                            }
                         j.end_object();
+                        if (mat_normal_tex[mi] >= 0) {
+                            j.key("normalTexture"); j.begin_object();
+                                j.key("index"); j.integer(mat_normal_tex[mi]);
+                            j.end_object();
+                        }
 
                         idtx_alpha_mode_t am = idtx_material_get_alpha_mode(mat);
                         if (am == IDTX_ALPHA_MASK) {
@@ -462,6 +497,27 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                     j.key("byteOffset"); j.integer(bv.byte_offset);
                     j.key("byteLength"); j.integer(bv.byte_length);
                     j.key("target");     j.integer(bv.target);
+                j.end_object();
+            }
+            j.end_array();
+        }
+
+        // textures + images — one image per unique URI, one texture
+        // per image (no sampler customisation in this MVP — UniVRM
+        // defaults are sensible).
+        if (!texture_uris.empty()) {
+            j.key("images"); j.begin_array();
+            for (auto const& uri : texture_uris) {
+                j.begin_object();
+                    j.key("uri"); j.string(uri);
+                j.end_object();
+            }
+            j.end_array();
+
+            j.key("textures"); j.begin_array();
+            for (size_t i = 0; i < texture_uris.size(); ++i) {
+                j.begin_object();
+                    j.key("source"); j.integer(static_cast<int64_t>(i));
                 j.end_object();
             }
             j.end_array();
