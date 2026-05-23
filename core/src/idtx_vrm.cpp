@@ -118,12 +118,20 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
     // Per-mesh accessor planning. Index into mesh_primitives is the
     // glTF mesh index; each entry stores accessor indices for its
     // attributes + indices accessor.
+    // glTF spec: JOINTS_N + WEIGHTS_N attributes are VEC4 only. To
+    // carry more than 4 bones-per-vertex, the writer emits one
+    // (JOINTS_n, WEIGHTS_n) pair per 4-bone set — JOINTS_0/WEIGHTS_0,
+    // JOINTS_1/WEIGHTS_1, ... for as many sets as the source mesh's
+    // bones-per-vertex requires (`ceil(bpv/4)` sets, padded with
+    // zero-weight entries when bpv % 4 != 0). Pure passthrough; the
+    // consumer engine decides whether to use all sets, downsample,
+    // or pick the dominant weights.
     struct PrimitivePlan {
         int positions_accessor = -1;
         int normals_accessor   = -1;
         int uvs_accessor       = -1;
-        int joints_accessor    = -1;
-        int weights_accessor   = -1;
+        std::vector<int> joints_accessor;
+        std::vector<int> weights_accessor;
         int indices_accessor   = -1;
     };
     int32_t mesh_count = idtx_avatar_get_mesh_count(avatar);
@@ -183,35 +191,48 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             accessors.push_back(au);
         }
 
-        // Skinning — JOINTS_0 (VEC4 uint16) + WEIGHTS_0 (VEC4 float),
-        // only when the mesh carries per-vertex skinning data and the
-        // bones_per_vertex == 4 (glTF's standard layout).
-        if (idtx_mesh_get_bones_per_vertex(mh) == 4) {
-            std::vector<int32_t> bi(static_cast<size_t>(vc) * 4);
-            std::vector<float>   wt(static_cast<size_t>(vc) * 4);
-            idtx_mesh_get_bone_indices(mh, bi.data());
-            idtx_mesh_get_weights(mh, wt.data());
+        // Skinning. Pure passthrough: emit one (JOINTS_n, WEIGHTS_n)
+        // VEC4 pair per 4-bone set, for `ceil(src_bpv / 4)` sets.
+        // Per-vertex bones in the source are taken verbatim — no
+        // top-K selection, no renormalisation. The consumer engine
+        // (Godot, UniVRM, Babylon) decides how many sets it uses
+        // and whether to downsample. The final partial set (when
+        // src_bpv % 4 != 0) is zero-padded with bone=0, weight=0.
+        int32_t src_bpv = idtx_mesh_get_bones_per_vertex(mh);
+        if (src_bpv > 0) {
+            std::vector<int32_t> bi_src(static_cast<size_t>(vc) * src_bpv);
+            std::vector<float>   wt_src(static_cast<size_t>(vc) * src_bpv);
+            idtx_mesh_get_bone_indices(mh, bi_src.data());
+            idtx_mesh_get_weights(mh, wt_src.data());
 
-            // Pack bone indices into uint16. Avatars with < 65k bones
-            // round-trip cleanly; pathological cases get clamped.
-            std::vector<uint16_t> bi16(bi.size());
-            for (size_t i = 0; i < bi.size(); ++i) {
-                int32_t v = bi[i];
-                bi16[i] = (v < 0 || v > 0xFFFF) ? 0 : static_cast<uint16_t>(v);
+            int set_count = (src_bpv + 3) / 4;   // ceil(src_bpv / 4)
+            for (int s = 0; s < set_count; ++s) {
+                std::vector<uint16_t> bi_set(static_cast<size_t>(vc) * 4, 0);
+                std::vector<float>    wt_set(static_cast<size_t>(vc) * 4, 0.0f);
+                for (int32_t v = 0; v < vc; ++v) {
+                    for (int k = 0; k < 4; ++k) {
+                        int src_idx = s * 4 + k;
+                        if (src_idx >= src_bpv) break;
+                        int32_t bone = bi_src[v * src_bpv + src_idx];
+                        bi_set[v * 4 + k] =
+                            (bone < 0 || bone > 0xFFFF) ? 0 : static_cast<uint16_t>(bone);
+                        wt_set[v * 4 + k] = wt_src[v * src_bpv + src_idx];
+                    }
+                }
+                uint32_t jo = idtx::core::detail::append_to_bin(bin, bi_set.data(), bi_set.size() * sizeof(uint16_t));
+                Accessor aj; aj.buffer_view = static_cast<int>(buffer_views.size());
+                aj.component_type = CT_UINT16; aj.count = vc; aj.type = "VEC4"; aj.has_min_max = false;
+                buffer_views.push_back({jo, static_cast<uint32_t>(bi_set.size() * sizeof(uint16_t)), TARGET_ARRAY_BUFFER});
+                mesh_primitives[mi].joints_accessor.push_back(static_cast<int>(accessors.size()));
+                accessors.push_back(aj);
+
+                uint32_t wo = idtx::core::detail::append_to_bin(bin, wt_set.data(), wt_set.size() * sizeof(float));
+                Accessor aw; aw.buffer_view = static_cast<int>(buffer_views.size());
+                aw.component_type = CT_FLOAT; aw.count = vc; aw.type = "VEC4"; aw.has_min_max = false;
+                buffer_views.push_back({wo, static_cast<uint32_t>(wt_set.size() * sizeof(float)), TARGET_ARRAY_BUFFER});
+                mesh_primitives[mi].weights_accessor.push_back(static_cast<int>(accessors.size()));
+                accessors.push_back(aw);
             }
-            uint32_t jo = idtx::core::detail::append_to_bin(bin, bi16.data(), bi16.size() * sizeof(uint16_t));
-            Accessor aj; aj.buffer_view = static_cast<int>(buffer_views.size());
-            aj.component_type = CT_UINT16; aj.count = vc; aj.type = "VEC4"; aj.has_min_max = false;
-            buffer_views.push_back({jo, static_cast<uint32_t>(bi16.size() * sizeof(uint16_t)), TARGET_ARRAY_BUFFER});
-            mesh_primitives[mi].joints_accessor = static_cast<int>(accessors.size());
-            accessors.push_back(aj);
-
-            uint32_t wo = idtx::core::detail::append_to_bin(bin, wt.data(), wt.size() * sizeof(float));
-            Accessor aw; aw.buffer_view = static_cast<int>(buffer_views.size());
-            aw.component_type = CT_FLOAT; aw.count = vc; aw.type = "VEC4"; aw.has_min_max = false;
-            buffer_views.push_back({wo, static_cast<uint32_t>(wt.size() * sizeof(float)), TARGET_ARRAY_BUFFER});
-            mesh_primitives[mi].weights_accessor = static_cast<int>(accessors.size());
-            accessors.push_back(aw);
         }
 
         // indices (uint32 — glTF doesn't have uint16/uint32 ambiguity
@@ -463,8 +484,14 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                     j.key("name");
                     j.string(mh != nullptr ? idtx_mesh_get_name(mh) : "Mesh");
                     j.key("mesh"); j.integer(mi);
+                    // Reference the single skin whenever the mesh
+                    // has ANY per-vertex skinning data (bpv > 0).
+                    // Previously the gate was bpv == 4, which dropped
+                    // skin for every mesh whose source export used
+                    // a non-4 bones-per-vertex (= almost every
+                    // Blender export beyond a trivial rig).
                     if (bone_count > 0 && mh != nullptr
-                        && idtx_mesh_get_bones_per_vertex(mh) == 4) {
+                        && idtx_mesh_get_bones_per_vertex(mh) > 0) {
                         j.key("skin"); j.integer(0);
                     }
                 j.end_object();
@@ -491,11 +518,19 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                                 if (mp.uvs_accessor >= 0) {
                                     j.key("TEXCOORD_0"); j.integer(mp.uvs_accessor);
                                 }
-                                if (mp.joints_accessor >= 0) {
-                                    j.key("JOINTS_0"); j.integer(mp.joints_accessor);
+                                // JOINTS_N/WEIGHTS_N — one VEC4 pair
+                                // per 4-bone set (passthrough; the
+                                // consumer decides how many sets to
+                                // honour).
+                                for (size_t s = 0; s < mp.joints_accessor.size(); ++s) {
+                                    char key[16];
+                                    std::snprintf(key, sizeof(key), "JOINTS_%zu", s);
+                                    j.key(key); j.integer(mp.joints_accessor[s]);
                                 }
-                                if (mp.weights_accessor >= 0) {
-                                    j.key("WEIGHTS_0"); j.integer(mp.weights_accessor);
+                                for (size_t s = 0; s < mp.weights_accessor.size(); ++s) {
+                                    char key[16];
+                                    std::snprintf(key, sizeof(key), "WEIGHTS_%zu", s);
+                                    j.key(key); j.integer(mp.weights_accessor[s]);
                                 }
                             j.end_object();
                             if (mp.indices_accessor >= 0) {
