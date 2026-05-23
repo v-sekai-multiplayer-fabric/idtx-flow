@@ -525,6 +525,31 @@ static void CollectMeshes(
     }
 }
 
+// Detect a VRM 0.x avatar by looking for the legacy node names that
+// godot-vrm 0.x imports leave in the scene. The presence of any one of
+// these is treated as a strong signal — VRM 0.0 has +Z-forward; VRM 1.0
+// has −Z-forward, so we need to know which one to record (and
+// eventually flip) on export.
+static bool LooksLikeVrm0(godot::Node* node)
+{
+    if (node == nullptr) return false;
+    godot::String klass = node->get_class();
+    if (klass == godot::String("VRMSpringBone")
+        || klass == godot::String("VRMSpringBoneColliderGroup")
+        || klass == godot::String("VRMFirstPerson")) {
+        return true;
+    }
+    if (node->has_meta(godot::StringName("vrm_version"))) {
+        godot::String v = node->get_meta(godot::StringName("vrm_version"));
+        if (v.begins_with("0.")) return true;
+    }
+    int n = node->get_child_count();
+    for (int i = 0; i < n; ++i) {
+        if (LooksLikeVrm0(node->get_child(i))) return true;
+    }
+    return false;
+}
+
 ::idtx_avatar_t* BuildIdtxAvatarFromGodotScene(godot::Node3D* root)
 {
     if (root == nullptr) return nullptr;
@@ -533,9 +558,35 @@ static void CollectMeshes(
     godot::String name = root->get_name();
     idtx_avatar_set_name(avatar, name.utf8().get_data());
 
+    bool is_vrm0 = LooksLikeVrm0(root);
+    if (is_vrm0) {
+        idtx_avatar_set_source_vrm_version(avatar, "0.x");
+    }
+
     float root_xform[16];
     GodotTransformToFloat16(root->get_transform(), root_xform);
-    idtx_avatar_set_root_transform(avatar, root_xform);
+
+    // VRM 0.0 → 1.0 orientation flip: rotate 180° about Y so the avatar
+    // ends up −Z-forward (VRM 1.0 convention) instead of +Z-forward.
+    // The flip is `Rotate_Y_180 * root_xform`, applied in-place.
+    if (is_vrm0) {
+        // Y-180 rotation matrix (row-major, identity translation):
+        //   ⎡-1  0  0  0⎤
+        //   ⎢ 0  1  0  0⎥
+        //   ⎢ 0  0 -1  0⎥
+        //   ⎣ 0  0  0  1⎦
+        float flipped[16];
+        for (int r = 0; r < 4; ++r) {
+            // row 0 and row 2 of identity * (-1); row 1 unchanged.
+            float sign = (r == 0 || r == 2) ? -1.0f : 1.0f;
+            for (int c = 0; c < 4; ++c) {
+                flipped[r * 4 + c] = sign * root_xform[r * 4 + c];
+            }
+        }
+        idtx_avatar_set_root_transform(avatar, flipped);
+    } else {
+        idtx_avatar_set_root_transform(avatar, root_xform);
+    }
 
     godot::Skeleton3D* found_skel = FindFirstSkeleton(root);
     if (found_skel != nullptr) {

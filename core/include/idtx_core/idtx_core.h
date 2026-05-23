@@ -245,6 +245,13 @@ IDTX_CORE_API const char* idtx_avatar_get_name(const idtx_avatar_t* avatar);
 IDTX_CORE_API void idtx_avatar_set_root_transform(idtx_avatar_t* avatar, const float matrix[16]);
 IDTX_CORE_API void idtx_avatar_get_root_transform(const idtx_avatar_t* avatar, float out_matrix[16]);
 
+// Source VRM version this avatar was upgraded from, for stamping
+// `customData["vSekai:upgrade:fromVrm"]` on the USD root prim so a
+// later round-trip preserves the provenance. Empty string = no
+// upgrade happened (avatar was authored as VRM 1.0 directly).
+IDTX_CORE_API void        idtx_avatar_set_source_vrm_version(idtx_avatar_t* avatar, const char* version);
+IDTX_CORE_API const char* idtx_avatar_get_source_vrm_version(const idtx_avatar_t* avatar);
+
 // Skeleton — at most one. Replacing destroys the previous skeleton.
 IDTX_CORE_API void idtx_avatar_set_skeleton(idtx_avatar_t* avatar, idtx_skeleton_t* skel);
 IDTX_CORE_API idtx_skeleton_t* idtx_avatar_get_skeleton(const idtx_avatar_t* avatar);

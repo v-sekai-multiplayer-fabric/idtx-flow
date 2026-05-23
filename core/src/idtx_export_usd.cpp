@@ -567,6 +567,17 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
         stage, pxr::SdfPath::AbsoluteRootPath(), avatar);
     stage->SetDefaultPrim(stage->GetPrimAtPath(root_path));
 
+    // Provenance stamp: when an avatar was upgraded from VRM 0.x on
+    // the way in, record it in customData so a later round-trip can
+    // preserve the upgrade history. Per CHI-252 acceptance criterion.
+    const char* src_ver = idtx_avatar_get_source_vrm_version(avatar);
+    if (src_ver != nullptr && src_ver[0] != '\0') {
+        pxr::UsdPrim root_prim = stage->GetPrimAtPath(root_path);
+        pxr::VtDictionary cd = root_prim.GetCustomData();
+        cd[pxr::TfToken("vSekai:upgrade:fromVrm")] = pxr::VtValue(std::string(src_ver));
+        root_prim.SetCustomData(cd);
+    }
+
     pxr::SdfPath skel_root_path = idtx::core::detail::emit_skeleton(
         stage, root_path, idtx_avatar_get_skeleton(avatar));
     pxr::SdfPath skel_path = skel_root_path.IsEmpty()

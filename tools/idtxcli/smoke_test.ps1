@@ -24,6 +24,14 @@ Copy-Item -Force usd\libs\windows\libidtx_usd.dll $cliDir
 
 $env:PXR_PLUGINPATH_NAME = (Resolve-Path 'thirdparty\openusd-25.11\lib\usd').Path
 
+# usdchecker lives in the with-Python build because the no-Python USD
+# build doesn't include the CLI tools. We use it post-roundtrip to gate
+# the exported .usda against ARKit-relaxed schema validity.
+$usdchecker = Resolve-Path 'thirdparty\openusd-25.11-withPython\bin\usdchecker.exe' -ErrorAction SilentlyContinue
+if ($usdchecker) {
+    $env:PATH = (Split-Path $usdchecker.Path) + ';' + (Resolve-Path 'thirdparty\openusd-25.11-withPython\lib').Path + ';' + $env:PATH
+}
+
 $fixtures = @(
     'minimal_with_schemas',
     'rich_avatar',
@@ -45,9 +53,23 @@ foreach ($f in $fixtures) {
     $rc1 = $LASTEXITCODE
     & "$cliDir\idtxcli.exe" vrm-to-usd $vrm $back > $null
     $rc2 = $LASTEXITCODE
-    $ok = ($rc1 -eq 0) -and ($rc2 -eq 0) -and (Test-Path $vrm) -and (Test-Path $back)
+
+    # usdchecker post-gate. ARKit relaxation is intentional — V-Sekai
+    # avatars carry skinning + applied API schemas the ARKit profile
+    # explicitly rejects.
+    $rc3 = 0
+    $checker_msg = ''
+    if ($usdchecker -and (Test-Path $back)) {
+        $out = & $usdchecker.Path --arkit=$false $back 2>&1
+        $rc3 = $LASTEXITCODE
+        if ($rc3 -ne 0) { $checker_msg = " usdchecker: " + ($out -join '; ') }
+    }
+
+    $ok = ($rc1 -eq 0) -and ($rc2 -eq 0) -and ($rc3 -eq 0) `
+        -and (Test-Path $vrm) -and (Test-Path $back)
     $status = if ($ok) { 'PASS' } else { 'FAIL'; $failed++ }
-    Write-Host ("{0,-28} {1}  usd->vrm rc={2}  vrm->usd rc={3}" -f $f, $status, $rc1, $rc2)
+    Write-Host ("{0,-28} {1}  usd->vrm rc={2}  vrm->usd rc={3}  usdchecker rc={4}{5}" -f `
+        $f, $status, $rc1, $rc2, $rc3, $checker_msg)
 }
 
 if ($failed -gt 0) {

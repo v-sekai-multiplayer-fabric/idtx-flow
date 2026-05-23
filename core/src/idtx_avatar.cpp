@@ -11,6 +11,7 @@
 struct idtx_avatar
 {
     std::string name;
+    std::string source_vrm_version;  // "" / "0.x" / "1.0"
     float root_transform[16] = {
         1, 0, 0, 0,
         0, 1, 0, 0,
@@ -58,6 +59,17 @@ extern "C" IDTX_CORE_API void idtx_avatar_set_root_transform(idtx_avatar_t* avat
 {
     if (avatar == nullptr || matrix == nullptr) return;
     std::memcpy(avatar->root_transform, matrix, sizeof(float) * 16);
+}
+
+extern "C" IDTX_CORE_API void idtx_avatar_set_source_vrm_version(idtx_avatar_t* avatar, const char* version)
+{
+    if (avatar == nullptr) return;
+    avatar->source_vrm_version = (version != nullptr) ? version : "";
+}
+
+extern "C" IDTX_CORE_API const char* idtx_avatar_get_source_vrm_version(const idtx_avatar_t* avatar)
+{
+    return (avatar != nullptr) ? avatar->source_vrm_version.c_str() : "";
 }
 
 extern "C" IDTX_CORE_API void idtx_avatar_get_root_transform(const idtx_avatar_t* avatar, float out_matrix[16])

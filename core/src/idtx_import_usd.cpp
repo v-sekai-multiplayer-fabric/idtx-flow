@@ -453,6 +453,15 @@ extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const c
     idtx_avatar_t* avatar = idtx_avatar_create();
     idtx_avatar_set_name(avatar, root.GetName().GetString().c_str());
 
+    // Recover source-VRM-version provenance from the root prim's
+    // customData. Empty when the avatar was never upgraded.
+    pxr::VtDictionary cd = root.GetCustomData();
+    auto it = cd.find("vSekai:upgrade:fromVrm");
+    if (it != cd.end() && it->second.IsHolding<std::string>()) {
+        idtx_avatar_set_source_vrm_version(
+            avatar, it->second.Get<std::string>().c_str());
+    }
+
     // Read root transform if the root prim is Xformable.
     if (auto xf = pxr::UsdGeomXformable(root)) {
         pxr::GfMatrix4d local_xform(1.0);
