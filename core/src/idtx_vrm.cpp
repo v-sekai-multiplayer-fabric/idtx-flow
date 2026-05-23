@@ -6,6 +6,7 @@
 
 #include "idtx_core/idtx_core.h"
 #include "idtx_core/internal/json_writer.h"
+#include "idtx_core/internal/usd_helpers.h"
 #include "idtx_core/internal/vrm_humanoid_bones.h"
 
 #include <cstdint>
@@ -475,13 +476,37 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             j.end_array();
         }
 
-        // skins — single skin covering all bones, if a skeleton exists.
-        // Each glTF mesh node that has skinning data references skin 0
-        // via node.skin (omitted for now — every primitive uses the same
-        // skin, no per-mesh skin slot variability in the MVP).
+        // skins — single skin covering all bones, with inverseBindMatrices
+        // derived from idtx_skeleton's bind transforms. glTF expects
+        // each IBM to be the inverse of the bone's world-space rest
+        // pose, so the shader can transform vertex positions from mesh
+        // space into joint-local space at bind time.
         if (bone_count > 0) {
+            // Compute IBMs: invert each bind matrix.
+            std::vector<float> ibms(static_cast<size_t>(bone_count) * 16);
+            for (int32_t i = 0; i < bone_count; ++i) {
+                float bind[16]; idtx_skeleton_get_bone_bind(skel, i, bind);
+                // GfMatrix4d inversion is the cleanest route since we
+                // already depend on USD's gf headers in this TU.
+                pxr::GfMatrix4d m = idtx::core::float16_to_gf_matrix(bind);
+                pxr::GfMatrix4d inv = m.GetInverse();
+                idtx::core::gf_matrix_to_float16(inv, &ibms[i * 16]);
+            }
+            uint32_t ibm_off = idtx::core::detail::append_to_bin(
+                bin, ibms.data(), ibms.size() * sizeof(float));
+            Accessor a_ibm;
+            a_ibm.buffer_view = static_cast<int>(buffer_views.size());
+            a_ibm.component_type = CT_FLOAT;
+            a_ibm.count = bone_count;
+            a_ibm.type = "MAT4";
+            a_ibm.has_min_max = false;
+            buffer_views.push_back({ibm_off, static_cast<uint32_t>(ibms.size() * sizeof(float)), 0});
+            int ibm_accessor = static_cast<int>(accessors.size());
+            accessors.push_back(a_ibm);
+
             j.key("skins"); j.begin_array();
                 j.begin_object();
+                    j.key("inverseBindMatrices"); j.integer(ibm_accessor);
                     j.key("joints"); j.begin_array();
                         for (int32_t i = 0; i < bone_count; ++i) j.integer(bone_node_index(i));
                     j.end_array();
