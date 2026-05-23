@@ -32,6 +32,9 @@
 #include <godot_cpp/variant/string.hpp>
 
 #include <godot_cpp/classes/base_material3d.hpp>
+#include <godot_cpp/classes/material.hpp>
+#include <godot_cpp/classes/shader.hpp>
+#include <godot_cpp/classes/shader_material.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
 
 #include <pxr/usd/usd/stage.h>
@@ -136,6 +139,11 @@ namespace idtxflow::exporter
     /// Emit a Material prim under `mats_scope_path` mirroring the
     /// values on a Godot BaseMaterial3D. Returns the SdfPath of the
     /// Material so the caller can wire the geometry's material:binding.
+    ///
+    /// Reference for the glTF-PBR <-> MaterialX standard_surface
+    /// parameter mapping (textures, normals, emission, etc. — Cycle
+    /// B currently only covers the scalar/colour subset):
+    /// https://github.com/KhronosGroup/glTF-MaterialX-Converter
     pxr::SdfPath ExportMaterial(
         pxr::UsdStageRefPtr const& stage,
         pxr::SdfPath const& mats_scope_path,
@@ -147,4 +155,31 @@ namespace idtxflow::exporter
     void BindMaterial(
         pxr::UsdPrim const& geom_prim,
         pxr::SdfPath const& material_path);
+
+    // ----------------------------------------------------------------
+    // Cycle C — godot-vrm MToon -> VSekaiMToonAPI.
+    //
+    // Detects whether a Godot ShaderMaterial uses one of godot-vrm's
+    // MToon shaders (Godot-MToon-Shader/mtoon.gdshader and family);
+    // when it does, stamps `apiSchemas = ["VSekaiMToonAPI"]` on the
+    // emitted Material prim and copies the per-uniform values into
+    // `v_sekai:mtoon:*` attributes per the schema in openusd-fabric/
+    // schema/v_sekai_schema.usda.
+    //
+    // For VRM 0.x MToon uniforms (`_ShadeColor`, `_ShadeShift`, ...),
+    // applies the openusd-fabric upgrade table in reverse to land
+    // VRM 1.0 MToon factor names. The same canonical
+    // maps/scss_mtoon_map.json is the source of truth; the C++ table
+    // ships embedded so the exporter has no runtime file dependency.
+    // ----------------------------------------------------------------
+
+    /// True if the godot-vrm MToon shader is bound on this material.
+    bool IsGodotVrmMToon(godot::Ref<godot::Material> const& material);
+
+    /// Stamp VSekaiMToonAPI on the already-emitted UsdShadeMaterial
+    /// and copy the godot-vrm MToon shader-parameter values into
+    /// `v_sekai:mtoon:*` attributes (VRM 1.0 naming).
+    void ApplyVSekaiMToonAPI(
+        pxr::UsdShadeMaterial const& usd_mat,
+        godot::Ref<godot::ShaderMaterial> const& source);
 }

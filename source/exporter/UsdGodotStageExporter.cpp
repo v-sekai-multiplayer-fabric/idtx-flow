@@ -331,6 +331,104 @@ namespace idtxflow::exporter
         if (mat) binding.Bind(mat);
     }
 
+    // ----------------------------------------------------------------
+    // Cycle C — godot-vrm MToon detection + VSekaiMToonAPI emission.
+    // ----------------------------------------------------------------
+
+    bool IsGodotVrmMToon(godot::Ref<godot::Material> const& material)
+    {
+        if (!material.is_valid()) return false;
+        godot::Ref<godot::ShaderMaterial> shader_mat = material;
+        if (!shader_mat.is_valid()) return false;
+        godot::Ref<godot::Shader> shader = shader_mat->get_shader();
+        if (!shader.is_valid()) return false;
+        // godot-vrm's shaders are named "mtoon", "mtoon_outline",
+        // "mtoon_cutout", "mtoon_trans*", "mtoon_cull_off". Match any.
+        godot::String name = shader->get_path().get_file().get_basename();
+        std::string lc = std::string(name.to_lower().utf8().get_data());
+        return lc.find("mtoon") != std::string::npos;
+    }
+
+    // Per-input mappings from godot-vrm MToon 0.x uniform names to
+    // VRM 1.0 MToon attribute names. The forward direction is what
+    // we apply here; the openusd-fabric SCSS bridge table lives in
+    // maps/scss_mtoon_map.json and ships the inverse for the SCSS
+    // path. Adding a real Lean-emitted table here is the next step
+    // — for the cycle-C scaffold the inline list keeps the change
+    // surface bounded.
+    struct MToonAttr {
+        char const* godot_uniform;   // godot-vrm uniform name (e.g. "_ShadeColor")
+        char const* vsekai_attr;     // schema attribute (e.g. "v_sekai:mtoon:shadeColorFactor")
+        char const* sdf_type;        // "Color3f", "Float", "Token", "Bool", "Int"
+    };
+
+    static constexpr MToonAttr kMToonMap[] = {
+        {"_ShadeColor",         "v_sekai:mtoon:shadeColorFactor",            "Color3f"},
+        {"_ShadeShift",         "v_sekai:mtoon:shadingShiftFactor",          "Float"},
+        {"_ShadeToony",         "v_sekai:mtoon:shadingToonyFactor",          "Float"},
+        {"_IndirectLightIntensity", "v_sekai:mtoon:giEqualizationFactor",    "Float"},
+        {"_RimColor",           "v_sekai:mtoon:parametricRimColorFactor",    "Color3f"},
+        {"_RimFresnelPower",    "v_sekai:mtoon:parametricRimFresnelPowerFactor", "Float"},
+        {"_RimLift",            "v_sekai:mtoon:parametricRimLiftFactor",     "Float"},
+        {"_RimLightingMix",     "v_sekai:mtoon:rimLightingMixFactor",        "Float"},
+        {"_MatcapColor",        "v_sekai:mtoon:matcapFactor",                "Color3f"},
+        {"_OutlineWidthMode",   "v_sekai:mtoon:outlineWidthMode",            "Token"},
+        {"_OutlineWidth",       "v_sekai:mtoon:outlineWidthFactor",          "Float"},
+        {"_OutlineColor",       "v_sekai:mtoon:outlineColorFactor",          "Color3f"},
+        {"_OutlineLightingMix", "v_sekai:mtoon:outlineLightingMixFactor",    "Float"},
+    };
+
+    static char const* OutlineWidthModeToken(int idx)
+    {
+        // godot-vrm's _OutlineWidthMode enum: 0=None, 1=World, 2=Screen.
+        // VRM 1.0 tokens: "none" / "worldCoordinates" / "screenCoordinates".
+        switch (idx) {
+            case 0:  return "none";
+            case 1:  return "worldCoordinates";
+            case 2:  return "screenCoordinates";
+            default: return "none";
+        }
+    }
+
+    void ApplyVSekaiMToonAPI(
+        pxr::UsdShadeMaterial const& usd_mat,
+        godot::Ref<godot::ShaderMaterial> const& source)
+    {
+        if (!usd_mat || !source.is_valid()) return;
+        pxr::UsdPrim prim = usd_mat.GetPrim();
+        prim.ApplyAPI(pxr::TfToken("VSekaiMToonAPI"));
+
+        for (auto const& m : kMToonMap) {
+            godot::Variant v = source->get_shader_parameter(m.godot_uniform);
+            if (v.get_type() == godot::Variant::NIL) continue;
+            pxr::SdfValueTypeName ty;
+            std::string ty_s = m.sdf_type;
+            if (ty_s == "Color3f") ty = pxr::SdfValueTypeNames->Color3f;
+            else if (ty_s == "Float") ty = pxr::SdfValueTypeNames->Float;
+            else if (ty_s == "Token") ty = pxr::SdfValueTypeNames->Token;
+            else if (ty_s == "Bool")  ty = pxr::SdfValueTypeNames->Bool;
+            else if (ty_s == "Int")   ty = pxr::SdfValueTypeNames->Int;
+            else continue;
+
+            pxr::UsdAttribute attr = prim.CreateAttribute(pxr::TfToken(m.vsekai_attr), ty);
+            if (ty_s == "Color3f") {
+                godot::Color c = v;
+                attr.Set(pxr::GfVec3f(c.r, c.g, c.b));
+            } else if (ty_s == "Float") {
+                attr.Set(static_cast<float>(double(v)));
+            } else if (ty_s == "Token") {
+                // outlineWidthMode is the only Token in the current
+                // map; godot-vrm stores it as a float enum.
+                int idx = static_cast<int>(double(v));
+                attr.Set(pxr::TfToken(OutlineWidthModeToken(idx)));
+            } else if (ty_s == "Bool") {
+                attr.Set(static_cast<bool>(v));
+            } else if (ty_s == "Int") {
+                attr.Set(static_cast<int>(int64_t(v)));
+            }
+        }
+    }
+
     bool ExportSceneToFile(godot::Node3D* root, godot::String const& path)
     {
         if (root == nullptr) {
