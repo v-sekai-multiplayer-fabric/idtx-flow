@@ -4,10 +4,17 @@
 #include "GodotAvatarBuilder.h"
 
 #include <godot_cpp/classes/array_mesh.hpp>
+#include <godot_cpp/classes/box_shape3d.hpp>
+#include <godot_cpp/classes/capsule_shape3d.hpp>
+#include <godot_cpp/classes/collision_shape3d.hpp>
+#include <godot_cpp/classes/cylinder_shape3d.hpp>
 #include <godot_cpp/classes/material.hpp>
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/physics_body3d.hpp>
+#include <godot_cpp/classes/shape3d.hpp>
 #include <godot_cpp/classes/skeleton3d.hpp>
+#include <godot_cpp/classes/sphere_shape3d.hpp>
 #include <godot_cpp/classes/spring_bone_collision3d.hpp>
 #include <godot_cpp/classes/spring_bone_collision_capsule3d.hpp>
 #include <godot_cpp/classes/spring_bone_collision_sphere3d.hpp>
@@ -424,6 +431,74 @@ static void CollectSpringSimulators(
     }
 }
 
+// Walk for PhysicsBody3D descendants (StaticBody3D / RigidBody3D /
+// CharacterBody3D / Area3D). For each, find its child CollisionShape3D
+// nodes and emit one idtx_physics_collider per shape. The collider's
+// transform is the world-relative local transform of the
+// CollisionShape3D node.
+static void CollectPhysicsColliders(
+    godot::Node* node,
+    ::idtx_avatar_t* avatar)
+{
+    if (node == nullptr) return;
+
+    if (godot::Object::cast_to<godot::PhysicsBody3D>(node) != nullptr
+        || node->get_class() == godot::String("Area3D")) {
+        // For each CollisionShape3D child, emit a collider.
+        int cn = node->get_child_count();
+        for (int i = 0; i < cn; ++i) {
+            auto* cs = godot::Object::cast_to<godot::CollisionShape3D>(node->get_child(i));
+            if (cs == nullptr) continue;
+            godot::Ref<godot::Shape3D> shape = cs->get_shape();
+            if (shape.is_null()) continue;
+
+            ::idtx_physics_collider_t* h = ::idtx_physics_collider_create();
+            idtx_physics_collider_set_name(h, godot::String(cs->get_name()).utf8().get_data());
+            float tm[16];
+            GodotTransformToFloat16(cs->get_transform(), tm);
+            idtx_physics_collider_set_transform(h, tm);
+
+            // The V-Sekai fork ships a TaperedCapsuleShape3D /
+            // TaperedCylinderShape3D (v-sekai-multiplayer-fabric/godot
+            // @6d88ebde). We dispatch via class name since they're
+            // module-provided and not in godot-cpp's generated bindings.
+            godot::String klass = shape->get_class();
+            if (klass == godot::String("TaperedCapsuleShape3D")) {
+                float top = static_cast<float>(static_cast<double>(shape->call("get_top_radius")));
+                float bot = static_cast<float>(static_cast<double>(shape->call("get_bottom_radius")));
+                float mid = static_cast<float>(static_cast<double>(shape->call("get_mid_height")));
+                idtx_physics_collider_set_tapered_capsule(h, top, bot, mid);
+            } else if (klass == godot::String("TaperedCylinderShape3D")) {
+                float top = static_cast<float>(static_cast<double>(shape->call("get_top_radius")));
+                float bot = static_cast<float>(static_cast<double>(shape->call("get_bottom_radius")));
+                float hgt = static_cast<float>(static_cast<double>(shape->call("get_height")));
+                idtx_physics_collider_set_tapered_cylinder(h, top, bot, hgt);
+            } else if (auto* sph = godot::Object::cast_to<godot::SphereShape3D>(shape.ptr())) {
+                idtx_physics_collider_set_sphere(h, sph->get_radius());
+            } else if (auto* box = godot::Object::cast_to<godot::BoxShape3D>(shape.ptr())) {
+                godot::Vector3 sz = box->get_size();
+                // BoxShape3D's `size` is full extents; idtx stores half-extents.
+                idtx_physics_collider_set_box(h, sz.x * 0.5f, sz.y * 0.5f, sz.z * 0.5f);
+            } else if (auto* cap = godot::Object::cast_to<godot::CapsuleShape3D>(shape.ptr())) {
+                idtx_physics_collider_set_capsule(h, cap->get_radius(), cap->get_height());
+            } else if (auto* cyl = godot::Object::cast_to<godot::CylinderShape3D>(shape.ptr())) {
+                idtx_physics_collider_set_cylinder(h, cyl->get_radius(), cyl->get_height());
+            } else {
+                // Unsupported shape (concave mesh, heightmap, etc.) —
+                // free the handle and skip rather than emit garbage.
+                idtx_physics_collider_destroy(h);
+                continue;
+            }
+            idtx_avatar_add_physics_collider(avatar, h);
+        }
+    }
+
+    int n = node->get_child_count();
+    for (int i = 0; i < n; ++i) {
+        CollectPhysicsColliders(node->get_child(i), avatar);
+    }
+}
+
 static void CollectMeshes(
     godot::Node* node,
     ::idtx_avatar_t* avatar,
@@ -469,6 +544,9 @@ static void CollectMeshes(
 
     MaterialCache cache;
     CollectMeshes(root, avatar, cache);
+
+    // Physics colliders — independent of spring bones / skeleton.
+    CollectPhysicsColliders(root, avatar);
 
     // Spring bones — register colliders first so chain.collider_path
     // references resolve to indices; then walk simulators.

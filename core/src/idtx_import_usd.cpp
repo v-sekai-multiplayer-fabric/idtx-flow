@@ -17,8 +17,12 @@
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/capsule.h>
+#include <pxr/usd/usdGeom/cube.h>
+#include <pxr/usd/usdGeom/cylinder.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
+#include <pxr/usd/usdGeom/sphere.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/usd/usdShade/material.h>
@@ -27,6 +31,8 @@
 #include <pxr/usd/usdSkel/bindingAPI.h>
 #include <pxr/usd/usdSkel/skeleton.h>
 
+#include <cmath>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -353,6 +359,86 @@ static idtx_spring_collider_t* read_spring_collider(pxr::UsdPrim const& prim)
     return col;
 }
 
+// Read a physics collider from a prim carrying PhysicsCollisionAPI.
+// Maps the prim type back to idtx_physics_shape, picks up V-Sekai
+// tapered extension attributes when present. Returns NULL if the
+// prim's shape isn't one we handle.
+static idtx_physics_collider_t* read_physics_collider(pxr::UsdPrim const& prim)
+{
+    if (!prim.IsValid() || !prim.HasAPI(pxr::TfToken("PhysicsCollisionAPI"))) return nullptr;
+    auto* out = idtx_physics_collider_create();
+    idtx_physics_collider_set_name(out, prim.GetName().GetString().c_str());
+
+    // Local transform.
+    pxr::UsdGeomXformable xf(prim);
+    if (xf) {
+        pxr::GfMatrix4d m(1.0); bool resets = false;
+        xf.GetLocalTransformation(&m, &resets);
+        float t[16]; idtx::core::gf_matrix_to_float16(m, t);
+        idtx_physics_collider_set_transform(out, t);
+    }
+
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:physics:attachedBone"))) {
+        int b = -1; a.Get(&b);
+        idtx_physics_collider_set_attached_bone(out, b);
+    }
+
+    // Tapered? — V-Sekai-extension flag overrides the geometric prim type.
+    bool tapered = false;
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:physics:tapered"))) a.Get(&tapered);
+    if (tapered) {
+        float top = 0.5f, bot = 0.5f, mid = 1.0f;
+        if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:physics:topRadius")))    a.Get(&top);
+        if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:physics:bottomRadius"))) a.Get(&bot);
+        if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:physics:midHeight")))    a.Get(&mid);
+        pxr::TfToken sub;
+        if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:physics:taperedShape"))) a.Get(&sub);
+        if (sub == pxr::TfToken("cylinder")) {
+            idtx_physics_collider_set_tapered_cylinder(out, top, bot, mid);
+        } else {
+            idtx_physics_collider_set_tapered_capsule(out, top, bot, mid);
+        }
+        return out;
+    }
+
+    if (prim.IsA<pxr::UsdGeomSphere>()) {
+        double radius = 1.0;
+        pxr::UsdGeomSphere(prim).GetRadiusAttr().Get(&radius);
+        idtx_physics_collider_set_sphere(out, static_cast<float>(radius));
+    } else if (prim.IsA<pxr::UsdGeomCapsule>()) {
+        double radius = 0.5, height = 1.0;
+        auto cap = pxr::UsdGeomCapsule(prim);
+        cap.GetRadiusAttr().Get(&radius);
+        cap.GetHeightAttr().Get(&height);
+        idtx_physics_collider_set_capsule(out, static_cast<float>(radius), static_cast<float>(height));
+    } else if (prim.IsA<pxr::UsdGeomCylinder>()) {
+        double radius = 0.5, height = 1.0;
+        auto cyl = pxr::UsdGeomCylinder(prim);
+        cyl.GetRadiusAttr().Get(&radius);
+        cyl.GetHeightAttr().Get(&height);
+        idtx_physics_collider_set_cylinder(out, static_cast<float>(radius), static_cast<float>(height));
+    } else if (prim.IsA<pxr::UsdGeomCube>()) {
+        // UsdGeomCube has a single `size` attr — half-extents come from
+        // the local-transform scale. Decompose the upper-left 3x3 of
+        // the transform we already read.
+        float t[16]; idtx_physics_collider_get_transform(out, t);
+        float sx = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        float sy = std::sqrt(t[4] * t[4] + t[5] * t[5] + t[6] * t[6]);
+        float sz = std::sqrt(t[8] * t[8] + t[9] * t[9] + t[10] * t[10]);
+        // Strip the scale from the stored transform so the box is unit.
+        float clean[16]; std::memcpy(clean, t, sizeof clean);
+        if (sx > 1e-6f) for (int k = 0; k < 3; ++k) clean[k]     /= sx;
+        if (sy > 1e-6f) for (int k = 0; k < 3; ++k) clean[4 + k] /= sy;
+        if (sz > 1e-6f) for (int k = 0; k < 3; ++k) clean[8 + k] /= sz;
+        idtx_physics_collider_set_transform(out, clean);
+        idtx_physics_collider_set_box(out, sx, sy, sz);
+    } else {
+        idtx_physics_collider_destroy(out);
+        return nullptr;
+    }
+    return out;
+}
+
 }  // namespace idtx::core::detail
 
 extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const char* path)
@@ -409,6 +495,13 @@ extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const c
             }
         }
         idtx_avatar_add_mesh(avatar, mesh, mat_index);
+    }
+
+    // Physics colliders — walk for PhysicsCollisionAPI-applied prims.
+    for (auto const& prim : pxr::UsdPrimRange(root)) {
+        if (auto* pc = idtx::core::detail::read_physics_collider(prim)) {
+            idtx_avatar_add_physics_collider(avatar, pc);
+        }
     }
 
     // Spring bones — colliders first so chains can reference them by index.

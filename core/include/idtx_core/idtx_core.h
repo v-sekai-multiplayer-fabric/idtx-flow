@@ -43,6 +43,7 @@ typedef struct idtx_mesh             idtx_mesh_t;
 typedef struct idtx_material         idtx_material_t;
 typedef struct idtx_spring_chain     idtx_spring_chain_t;
 typedef struct idtx_spring_collider  idtx_spring_collider_t;
+typedef struct idtx_physics_collider idtx_physics_collider_t;
 typedef struct idtx_avatar           idtx_avatar_t;
 
 typedef enum idtx_collider_shape
@@ -50,6 +51,20 @@ typedef enum idtx_collider_shape
     IDTX_COLLIDER_SPHERE  = 0,
     IDTX_COLLIDER_CAPSULE = 1,
 } idtx_collider_shape_t;
+
+// Physics-collider primitive shape — separate enum from spring bones
+// because the physics layer covers a wider range (boxes, cylinders,
+// and the V-Sekai tapered variants that ship in the godot fork at
+// v-sekai-multiplayer-fabric/godot@6d88ebde).
+typedef enum idtx_physics_shape
+{
+    IDTX_PHYSICS_BOX              = 0,
+    IDTX_PHYSICS_SPHERE           = 1,
+    IDTX_PHYSICS_CAPSULE          = 2,
+    IDTX_PHYSICS_CYLINDER         = 3,
+    IDTX_PHYSICS_TAPERED_CAPSULE  = 4,
+    IDTX_PHYSICS_TAPERED_CYLINDER = 5,
+} idtx_physics_shape_t;
 
 // ---------------------------------------------------------------------
 // idtx_skeleton — bone hierarchy with rest + bind transforms.
@@ -323,6 +338,62 @@ IDTX_CORE_API idtx_spring_chain_t* idtx_avatar_get_spring_chain(const idtx_avata
 IDTX_CORE_API int32_t idtx_avatar_add_spring_collider(idtx_avatar_t* avatar, idtx_spring_collider_t* col);
 IDTX_CORE_API int32_t idtx_avatar_get_spring_collider_count(const idtx_avatar_t* avatar);
 IDTX_CORE_API idtx_spring_collider_t* idtx_avatar_get_spring_collider(const idtx_avatar_t* avatar, int32_t index);
+
+// ---------------------------------------------------------------------
+// idtx_physics_collider — a CollisionShape3D-equivalent attached to a
+// PhysicsBody3D (StaticBody / RigidBody / Area / CharacterBody). Lives
+// on the avatar separate from spring-bone colliders since the two
+// concepts don't overlap: spring colliders affect cloth/hair sims,
+// physics colliders affect rigid-body collision.
+//
+// Shape-specific dimensions are stored as 3 floats. Meaning depends on
+// the shape enum (see idtx_physics_collider_get_dimensions docs).
+// ---------------------------------------------------------------------
+
+IDTX_CORE_API idtx_physics_collider_t* idtx_physics_collider_create(void);
+IDTX_CORE_API void                     idtx_physics_collider_destroy(idtx_physics_collider_t* col);
+
+IDTX_CORE_API void        idtx_physics_collider_set_name(idtx_physics_collider_t* col, const char* name);
+IDTX_CORE_API const char* idtx_physics_collider_get_name(const idtx_physics_collider_t* col);
+
+IDTX_CORE_API idtx_physics_shape_t idtx_physics_collider_get_shape(const idtx_physics_collider_t* col);
+
+// Local transform relative to the parent (typically a PhysicsBody3D root).
+IDTX_CORE_API void idtx_physics_collider_set_transform(idtx_physics_collider_t* col, const float matrix[16]);
+IDTX_CORE_API void idtx_physics_collider_get_transform(const idtx_physics_collider_t* col, float out_matrix[16]);
+
+// Optional bone attachment for skinned physics (e.g. bone-driven
+// hitboxes on a Skeleton3D). -1 = world-space body root.
+IDTX_CORE_API void    idtx_physics_collider_set_attached_bone(idtx_physics_collider_t* col, int32_t bone_index);
+IDTX_CORE_API int32_t idtx_physics_collider_get_attached_bone(const idtx_physics_collider_t* col);
+
+// Shape setters — choose one per collider. Each writes the dimensions
+// array AND the shape enum.
+IDTX_CORE_API void idtx_physics_collider_set_box(idtx_physics_collider_t* col,
+    float half_extent_x, float half_extent_y, float half_extent_z);
+IDTX_CORE_API void idtx_physics_collider_set_sphere(idtx_physics_collider_t* col, float radius);
+IDTX_CORE_API void idtx_physics_collider_set_capsule(idtx_physics_collider_t* col,
+    float radius, float height);
+IDTX_CORE_API void idtx_physics_collider_set_cylinder(idtx_physics_collider_t* col,
+    float radius, float height);
+IDTX_CORE_API void idtx_physics_collider_set_tapered_capsule(idtx_physics_collider_t* col,
+    float top_radius, float bottom_radius, float mid_height);
+IDTX_CORE_API void idtx_physics_collider_set_tapered_cylinder(idtx_physics_collider_t* col,
+    float top_radius, float bottom_radius, float height);
+
+// Bulk getter. Layout by shape:
+//   BOX             : [half_extent_x, half_extent_y, half_extent_z]
+//   SPHERE          : [radius, 0, 0]
+//   CAPSULE         : [radius, height, 0]
+//   CYLINDER        : [radius, height, 0]
+//   TAPERED_CAPSULE : [top_radius, bottom_radius, mid_height]
+//   TAPERED_CYLINDER: [top_radius, bottom_radius, height]
+IDTX_CORE_API void idtx_physics_collider_get_dimensions(const idtx_physics_collider_t* col, float out_dims[3]);
+
+// Avatar-level list.
+IDTX_CORE_API int32_t                  idtx_avatar_add_physics_collider(idtx_avatar_t* avatar, idtx_physics_collider_t* col);
+IDTX_CORE_API int32_t                  idtx_avatar_get_physics_collider_count(const idtx_avatar_t* avatar);
+IDTX_CORE_API idtx_physics_collider_t* idtx_avatar_get_physics_collider(const idtx_avatar_t* avatar, int32_t index);
 
 // ---------------------------------------------------------------------
 // Top-level I/O entry points.

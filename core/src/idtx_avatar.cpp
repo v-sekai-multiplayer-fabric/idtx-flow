@@ -21,8 +21,9 @@ struct idtx_avatar
     std::vector<idtx_mesh_t*>     meshes;
     std::vector<int32_t>          mesh_material;   // parallel to meshes
     std::vector<idtx_material_t*> materials;
-    std::vector<idtx_spring_chain_t*>    spring_chains;
-    std::vector<idtx_spring_collider_t*> spring_colliders;
+    std::vector<idtx_spring_chain_t*>     spring_chains;
+    std::vector<idtx_spring_collider_t*>  spring_colliders;
+    std::vector<idtx_physics_collider_t*> physics_colliders;
 };
 
 extern "C" IDTX_CORE_API idtx_avatar_t* idtx_avatar_create(void)
@@ -37,7 +38,8 @@ extern "C" IDTX_CORE_API void idtx_avatar_destroy(idtx_avatar_t* avatar)
     for (auto* m : avatar->meshes)    if (m != nullptr) idtx_mesh_destroy(m);
     for (auto* mat : avatar->materials) if (mat != nullptr) idtx_material_destroy(mat);
     for (auto* sc : avatar->spring_chains)    if (sc != nullptr) idtx_spring_chain_destroy(sc);
-    for (auto* col : avatar->spring_colliders) if (col != nullptr) idtx_spring_collider_destroy(col);
+    for (auto* col : avatar->spring_colliders)  if (col != nullptr) idtx_spring_collider_destroy(col);
+    for (auto* pc : avatar->physics_colliders) if (pc != nullptr) idtx_physics_collider_destroy(pc);
     delete avatar;
 }
 
@@ -156,4 +158,19 @@ extern "C" IDTX_CORE_API idtx_spring_collider_t* idtx_avatar_get_spring_collider
 {
     if (!avatar || index < 0 || index >= static_cast<int32_t>(avatar->spring_colliders.size())) return nullptr;
     return avatar->spring_colliders[index];
+}
+
+extern "C" IDTX_CORE_API int32_t idtx_avatar_add_physics_collider(idtx_avatar_t* avatar, idtx_physics_collider_t* col)
+{
+    if (avatar == nullptr) return -1;
+    int32_t idx = static_cast<int32_t>(avatar->physics_colliders.size());
+    avatar->physics_colliders.push_back(col);
+    return idx;
+}
+extern "C" IDTX_CORE_API int32_t idtx_avatar_get_physics_collider_count(const idtx_avatar_t* avatar)
+{ return avatar ? static_cast<int32_t>(avatar->physics_colliders.size()) : 0; }
+extern "C" IDTX_CORE_API idtx_physics_collider_t* idtx_avatar_get_physics_collider(const idtx_avatar_t* avatar, int32_t index)
+{
+    if (!avatar || index < 0 || index >= static_cast<int32_t>(avatar->physics_colliders.size())) return nullptr;
+    return avatar->physics_colliders[index];
 }

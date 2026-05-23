@@ -26,7 +26,11 @@
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
 #include <pxr/usd/usdShade/tokens.h>
+#include <pxr/usd/usdGeom/capsule.h>
+#include <pxr/usd/usdGeom/cube.h>
+#include <pxr/usd/usdGeom/cylinder.h>
 #include <pxr/usd/usdGeom/scope.h>
+#include <pxr/usd/usdGeom/sphere.h>
 #include <pxr/usd/usdSkel/bindingAPI.h>
 #include <pxr/usd/usdSkel/root.h>
 #include <pxr/usd/usdSkel/skeleton.h>
@@ -421,6 +425,130 @@ static void emit_spring_collider(
     }
 }
 
+// Emit one physics collider prim. Picks the right UsdGeom primitive
+// for the shape (Cube / Sphere / Capsule / Cylinder), applies
+// UsdPhysicsCollisionAPI, and writes V-Sekai extension attributes
+// for tapered variants (no standard USD physics tapered shape).
+static void emit_physics_collider(
+    pxr::UsdStageRefPtr const& stage,
+    pxr::SdfPath const& parent_path,
+    idtx_physics_collider_t const* col,
+    std::set<std::string>& siblings)
+{
+    if (col == nullptr) return;
+    std::string desired = sanitise_prim_name(idtx_physics_collider_get_name(col));
+    if (desired.empty()) desired = "Collider";
+    pxr::SdfPath p = unique_child_path(parent_path, desired, siblings);
+
+    float dims[3]; idtx_physics_collider_get_dimensions(col, dims);
+    idtx_physics_shape_t shape = idtx_physics_collider_get_shape(col);
+
+    pxr::UsdPrim prim;
+    switch (shape) {
+        case IDTX_PHYSICS_BOX: {
+            auto cube = pxr::UsdGeomCube::Define(stage, p);
+            cube.CreateSizeAttr().Set(2.0);  // UsdGeomCube is unit cube; scale via xform
+            // Half-extents go on the xform scale.
+            float m[16] = {
+                dims[0], 0, 0, 0,
+                0, dims[1], 0, 0,
+                0, 0, dims[2], 0,
+                0, 0, 0,       1,
+            };
+            float prev[16]; idtx_physics_collider_get_transform(col, prev);
+            // Multiply prev * scale (row-major).
+            float final_m[16];
+            for (int r = 0; r < 4; ++r) {
+                for (int c = 0; c < 4; ++c) {
+                    float s = 0.0f;
+                    for (int k = 0; k < 4; ++k) s += prev[r * 4 + k] * m[k * 4 + c];
+                    final_m[r * 4 + c] = s;
+                }
+            }
+            auto op = cube.AddTransformOp(pxr::UsdGeomXformOp::PrecisionDouble);
+            op.Set(float16_to_gf_matrix(final_m));
+            prim = cube.GetPrim();
+            break;
+        }
+        case IDTX_PHYSICS_SPHERE: {
+            auto sph = pxr::UsdGeomSphere::Define(stage, p);
+            sph.CreateRadiusAttr().Set(static_cast<double>(dims[0]));
+            auto op = sph.AddTransformOp(pxr::UsdGeomXformOp::PrecisionDouble);
+            float xf[16]; idtx_physics_collider_get_transform(col, xf);
+            op.Set(float16_to_gf_matrix(xf));
+            prim = sph.GetPrim();
+            break;
+        }
+        case IDTX_PHYSICS_CAPSULE: {
+            auto cap = pxr::UsdGeomCapsule::Define(stage, p);
+            cap.CreateRadiusAttr().Set(static_cast<double>(dims[0]));
+            cap.CreateHeightAttr().Set(static_cast<double>(dims[1]));
+            cap.CreateAxisAttr().Set(pxr::TfToken("Y"));
+            auto op = cap.AddTransformOp(pxr::UsdGeomXformOp::PrecisionDouble);
+            float xf[16]; idtx_physics_collider_get_transform(col, xf);
+            op.Set(float16_to_gf_matrix(xf));
+            prim = cap.GetPrim();
+            break;
+        }
+        case IDTX_PHYSICS_CYLINDER: {
+            auto cyl = pxr::UsdGeomCylinder::Define(stage, p);
+            cyl.CreateRadiusAttr().Set(static_cast<double>(dims[0]));
+            cyl.CreateHeightAttr().Set(static_cast<double>(dims[1]));
+            cyl.CreateAxisAttr().Set(pxr::TfToken("Y"));
+            auto op = cyl.AddTransformOp(pxr::UsdGeomXformOp::PrecisionDouble);
+            float xf[16]; idtx_physics_collider_get_transform(col, xf);
+            op.Set(float16_to_gf_matrix(xf));
+            prim = cyl.GetPrim();
+            break;
+        }
+        case IDTX_PHYSICS_TAPERED_CAPSULE:
+        case IDTX_PHYSICS_TAPERED_CYLINDER: {
+            // No standard USD physics primitive for tapered shapes.
+            // Emit a Capsule as the "downgraded" representation (using
+            // max of top/bottom radius as the collision-conservative
+            // approximation) and attach V-Sekai extension attributes
+            // that carry the full shape for round-trip into Godot/Jolt.
+            auto cap = pxr::UsdGeomCapsule::Define(stage, p);
+            float r = (dims[0] > dims[1]) ? dims[0] : dims[1];
+            cap.CreateRadiusAttr().Set(static_cast<double>(r));
+            cap.CreateHeightAttr().Set(static_cast<double>(dims[2]));
+            cap.CreateAxisAttr().Set(pxr::TfToken("Y"));
+            auto op = cap.AddTransformOp(pxr::UsdGeomXformOp::PrecisionDouble);
+            float xf[16]; idtx_physics_collider_get_transform(col, xf);
+            op.Set(float16_to_gf_matrix(xf));
+            prim = cap.GetPrim();
+            prim.CreateAttribute(
+                pxr::TfToken("v_sekai:physics:tapered"),
+                pxr::SdfValueTypeNames->Bool).Set(true);
+            prim.CreateAttribute(
+                pxr::TfToken("v_sekai:physics:topRadius"),
+                pxr::SdfValueTypeNames->Float).Set(dims[0]);
+            prim.CreateAttribute(
+                pxr::TfToken("v_sekai:physics:bottomRadius"),
+                pxr::SdfValueTypeNames->Float).Set(dims[1]);
+            prim.CreateAttribute(
+                pxr::TfToken("v_sekai:physics:midHeight"),
+                pxr::SdfValueTypeNames->Float).Set(dims[2]);
+            if (shape == IDTX_PHYSICS_TAPERED_CYLINDER) {
+                prim.CreateAttribute(
+                    pxr::TfToken("v_sekai:physics:taperedShape"),
+                    pxr::SdfValueTypeNames->Token).Set(pxr::TfToken("cylinder"));
+            }
+            break;
+        }
+    }
+
+    if (prim.IsValid()) {
+        prim.ApplyAPI(pxr::TfToken("PhysicsCollisionAPI"));
+        int32_t bone = idtx_physics_collider_get_attached_bone(col);
+        if (bone >= 0) {
+            prim.CreateAttribute(
+                pxr::TfToken("v_sekai:physics:attachedBone"),
+                pxr::SdfValueTypeNames->Int).Set(bone);
+        }
+    }
+}
+
 }  // namespace idtx::core::detail
 
 extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
@@ -477,6 +605,21 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
 
             idtx::core::detail::bind_mesh_to_skeleton(
                 stage, mp, skel_path, idtx_avatar_get_mesh(avatar, i));
+        }
+    }
+
+    // Physics colliders — grouped under a Scope below the avatar root
+    // so they don't clutter the geometry hierarchy. Each one carries
+    // UsdPhysicsCollisionAPI + V-Sekai extension attributes for
+    // tapered variants.
+    int32_t phys_count = idtx_avatar_get_physics_collider_count(avatar);
+    if (phys_count > 0) {
+        pxr::SdfPath phys_root = root_path.AppendChild(pxr::TfToken("PhysicsColliders"));
+        pxr::UsdGeomScope::Define(stage, phys_root);
+        std::set<std::string> phys_siblings;
+        for (int32_t i = 0; i < phys_count; ++i) {
+            idtx::core::detail::emit_physics_collider(
+                stage, phys_root, idtx_avatar_get_physics_collider(avatar, i), phys_siblings);
         }
     }
 
