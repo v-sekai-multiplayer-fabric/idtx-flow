@@ -1,0 +1,113 @@
+// Copyright 2026 The openusd-fabric authors / V-Sekai contributors.
+// SPDX-License-Identifier: Apache-2.0 OR MPL-2.0
+//
+// UsdGodotStageExporter — inverse direction of UsdGodotStageConverter.
+//
+// Walks a Godot Node3D tree, emits a USD stage suitable for re-import
+// via the existing UsdGodotStageConverter. Mirrors the converter's
+// per-prim-type template specialisation so the import and export
+// paths stay in lockstep visually.
+//
+// MVP scopes (filled out in subsequent cycles):
+//   * Cycle A — Xform + Mesh (this file, current state).
+//   * Cycle B — BaseMaterial3D -> UsdPreviewSurface (+ MaterialX twin).
+//   * Cycle C — godot-vrm MToon -> apiSchemas=["VSekaiMToonAPI"] +
+//               v_sekai:mtoon:* attributes (consumes the openusd-fabric
+//               SCSS bridge map in reverse).
+//   * Cycle D — Skeleton3D -> UsdSkel + SpringBoneSimulator3D ->
+//               VSekaiSpringBoneAPI / VSekaiSpringBoneColliderAPI.
+//
+// Entry point: ExportSceneToFile(root, path). Returns true on success
+// and leaves a .usda at `path`; on failure logs via IDTX_LOG and
+// returns false without partial writes.
+
+#pragma once
+
+#include <godot_cpp/classes/array_mesh.hpp>
+#include <godot_cpp/classes/box_mesh.hpp>
+#include <godot_cpp/classes/cylinder_mesh.hpp>
+#include <godot_cpp/classes/mesh_instance3d.hpp>
+#include <godot_cpp/classes/node3d.hpp>
+#include <godot_cpp/classes/sphere_mesh.hpp>
+#include <godot_cpp/variant/string.hpp>
+
+#include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usdGeom/cube.h>
+#include <pxr/usd/usdGeom/cylinder.h>
+#include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/sphere.h>
+#include <pxr/usd/usdGeom/xform.h>
+#include <pxr/usd/usdGeom/xformCommonAPI.h>
+
+#include <idtxflow_godot/types/GodotTypes.h>
+
+namespace idtxflow::exporter
+{
+    /// Convert a Godot Transform3D into a USD GfMatrix4d suitable for
+    /// UsdGeomXformCommonAPI::SetTranslate / SetRotate / SetScale.
+    pxr::GfMatrix4d GodotTransformToUsdMatrix(godot::Transform3D const& transform);
+
+    /// Sanitise a Godot Node name into a USD-legal prim name. USD
+    /// requires identifier-compatible names (`[A-Za-z_][A-Za-z0-9_]*`).
+    std::string SanitisePrimName(godot::String const& godot_name);
+
+    /// Build a unique, USD-legal prim path under `parent` given a desired
+    /// leaf name. Duplicates get numeric suffixes (`_2`, `_3`, ...).
+    pxr::SdfPath ChildPath(pxr::SdfPath const& parent, std::string const& desired);
+
+    /// Per-cycle entry points. Cycle A handles Xform + Mesh; B/C/D
+    /// extend this file with material / MToon / skeleton emitters as
+    /// they land.
+
+    /// Emit a UsdGeomXform at `path` from a plain Node3D's transform.
+    pxr::UsdGeomXform ExportXform(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& path,
+        godot::Transform3D const& transform);
+
+    /// Emit a UsdGeomCube at `path` from a Godot BoxMesh.
+    pxr::UsdGeomCube ExportCube(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& path,
+        godot::Transform3D const& transform,
+        godot::Ref<godot::BoxMesh> const& mesh);
+
+    /// Emit a UsdGeomSphere at `path` from a Godot SphereMesh.
+    pxr::UsdGeomSphere ExportSphere(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& path,
+        godot::Transform3D const& transform,
+        godot::Ref<godot::SphereMesh> const& mesh);
+
+    /// Emit a UsdGeomCylinder at `path` from a Godot CylinderMesh.
+    pxr::UsdGeomCylinder ExportCylinder(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& path,
+        godot::Transform3D const& transform,
+        godot::Ref<godot::CylinderMesh> const& mesh);
+
+    /// Emit a UsdGeomMesh at `path` from a Godot ArrayMesh (or any
+    /// Godot Mesh that yields surface arrays). Each surface in the
+    /// Godot mesh becomes a faceSet on the single UsdGeomMesh.
+    pxr::UsdGeomMesh ExportMesh(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& path,
+        godot::Transform3D const& transform,
+        godot::Ref<godot::Mesh> const& mesh);
+
+    /// Recursive driver. Walks `node` and every Node3D descendant,
+    /// dispatching to the per-type exporters above. Returns the prim
+    /// path created for `node` (or the empty path if `node` was not a
+    /// recognised Godot 3D node — that subtree is skipped).
+    pxr::SdfPath ExportNodeRecursive(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& parent_path,
+        godot::Node3D* node);
+
+    /// Top-level entry: serialise the whole sub-tree rooted at `root`
+    /// into a USD stage written to `path`. Returns true on success.
+    /// The stage is authored in metres (metersPerUnit=1.0) and Y-up
+    /// to match Godot's native convention; the importer adapts to
+    /// authored values on the re-read.
+    bool ExportSceneToFile(godot::Node3D* root, godot::String const& path);
+}
