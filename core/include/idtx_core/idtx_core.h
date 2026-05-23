@@ -172,6 +172,28 @@ IDTX_CORE_API int32_t idtx_mesh_has_normals(const idtx_mesh_t* mesh);
 IDTX_CORE_API int32_t idtx_mesh_has_uvs    (const idtx_mesh_t* mesh);
 IDTX_CORE_API int32_t idtx_mesh_has_colors (const idtx_mesh_t* mesh);
 
+// Tris-to-quads reconstruction (CHI-253). Walks the mesh's triangle
+// list, builds the dual triangle-adjacency graph, runs greedy
+// mutual-best matching (each triangle picks its highest-weight
+// neighbour; pairs only land if both pick each other), and replaces
+// the index buffer + face_vertex_counts in-place with the
+// reconstructed quads + remaining triangles.
+//
+// `planarity_max_degrees` is the planarity gate: triangle-pair
+// normals deviating by more than this many degrees never form a
+// quad. Typical values: 5 (strict) to 30 (lenient).
+//
+// Algorithm matches the GPU Slang shader (lean/Fabric/Mesh/
+// TrisToQuadsGPU.lean) so CPU and GPU paths produce
+// bit-identical output. The CPU path is the default; the GPU
+// path is opt-in via a future `--gpu` flag.
+//
+// Returns the number of quads formed. Returns -1 on error
+// (mesh NULL, non-triangle face counts, etc).
+IDTX_CORE_API int32_t idtx_mesh_reconstruct_quads(
+    idtx_mesh_t* mesh,
+    float planarity_max_degrees);
+
 // ---------------------------------------------------------------------
 // idtx_material — PBR + MToon material parameters.
 //
