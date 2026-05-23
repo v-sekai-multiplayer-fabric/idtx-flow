@@ -50,10 +50,17 @@ unity/**/*.meta.bak
 *.lib
 *.pdb
 *.obj
+*.ilk
 *.os
 *.o
 *.a
 idtx-build.log
+
+# Test runners / dev caches
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
 
 # avatar pipeline binary outputs — produced by the smoke test (under
 # /build/idtxcli/ which is already ignored) and by ad-hoc CLI runs.
