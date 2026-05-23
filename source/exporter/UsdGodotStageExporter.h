@@ -123,11 +123,28 @@ namespace idtxflow::exporter
         godot::Ref<godot::Mesh> const& mesh,
         godot::Node3D* source_node = nullptr);
 
-    /// CHI-253 reconstruction hook. Takes a flat triangle index
-    /// buffer (3*tri_count int32s) and returns the recovered
-    /// (faceVertexCounts, faceVertexIndices) pair. Today returns the
-    /// triangulated input unchanged; once CHI-253 ships its Slang
-    /// shader, this is the dispatch point.
+    /// CHI-253 reconstruction seam — pass-through stub today, real
+    /// implementation deferred to CHI-253's Lean -> Slang GPU shader.
+    ///
+    /// Why this is a stub: equal-or-better quality vs the reference
+    /// ILP requires max-weight matching on the triangle adjacency
+    /// graph (Edmonds' blossom, O(V³)). At realistic avatar mesh
+    /// sizes (10k-100k tris) that's impractical on the CPU; the
+    /// reference V-Sekai-fire/Optimized-Tris-to-Quads-Converter
+    /// pays this cost via PuLP+CBC, which itself can take seconds
+    /// to minutes on dense meshes.
+    ///
+    /// CHI-253's plan is the right answer: formulate the ILP in
+    /// Lean, emit a Slang compute shader, dispatch on the GPU
+    /// via RenderingDevice (or fall back to a HiGHS/CBC CPU path
+    /// behind --solver=cpu). When that lands, the body of
+    /// ReconstructQuads below dispatches it; the interface stays
+    /// stable so no other exporter code changes.
+    ///
+    /// Until then: pass-through (triangulated output preserved).
+    /// Meshes that came in via the importer's sidecar still
+    /// round-trip losslessly via the TryReadSidecarFaceCounts
+    /// path in ExportMesh — that path doesn't depend on this.
     struct ReconstructedTopology {
         std::vector<int> face_vertex_counts;
         std::vector<int> face_vertex_indices;
