@@ -23,6 +23,8 @@
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/sphere.h>
+#include <pxr/usd/usdGeom/metrics.h>
+#include <pxr/usd/usdGeom/tokens.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/usd/usdShade/material.h>
@@ -660,6 +662,126 @@ extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const c
         if (auto* chain = idtx::core::detail::read_spring_chain(prim)) {
             idtx_avatar_add_spring_chain(avatar, chain);
         }
+    }
+
+    // Coordinate-system normalisation. VRM 1.0 is Y-up; USD's
+    // UsdGeomGetStageUpAxis can be Y or Z (Blender authors Z-up by
+    // default, scoot from Maya / Houdini authors Y-up). When the
+    // source is Z-up, bake the rotation INTO every position, normal,
+    // bind matrix, and the root rest transforms so the idtx_avatar
+    // lives natively in Y-up. Avoids fudging with a glTF root-node
+    // rotation that downstream consumers can ignore or strip.
+    //
+    // Rotation matrix (USD row-major):
+    //   ( (1, 0, 0, 0),
+    //     (0, 0,-1, 0),
+    //     (0, 1, 0, 0),
+    //     (0, 0, 0, 1) )
+    // takes (x, y_zup, z_zup) -> (x, z_zup, -y_zup). +Z up -> +Y up.
+    pxr::TfToken upAxis = pxr::UsdGeomGetStageUpAxis(stage);
+    if (upAxis == pxr::UsdGeomTokens->z) {
+        pxr::GfMatrix4d R(1.0);
+        R.SetRow(1, pxr::GfVec4d(0, 0, -1, 0));
+        R.SetRow(2, pxr::GfVec4d(0, 1,  0, 0));
+
+        auto rotate_vec3 = [&](float& x, float& y, float& z) {
+            pxr::GfVec4f v(x, y, z, 0.0f);   // direction (w=0)
+            pxr::GfVec4d v_d(v[0], v[1], v[2], 0.0);
+            v_d = v_d * R;
+            x = static_cast<float>(v_d[0]);
+            y = static_cast<float>(v_d[1]);
+            z = static_cast<float>(v_d[2]);
+        };
+
+        auto rotate_mat4 = [&](float m[16]) {
+            pxr::GfMatrix4d M = idtx::core::float16_to_gf_matrix(m);
+            // World-space transforms (bind) need to be rotated into
+            // the new world frame: M' = M * R (since USD uses
+            // row-vector convention, premultiplying by the input
+            // basis change is on the RIGHT).
+            M = M * R;
+            idtx::core::gf_matrix_to_float16(M, m);
+        };
+
+        // Bone bind matrices (world-space) and root bones' rest
+        // matrices (relative-to-world). Non-root bones' rests are
+        // joint-local — the parent's frame already carries the
+        // rotation, so the local transform stays unchanged.
+        if (auto* skel = idtx_avatar_get_skeleton(avatar)) {
+            int32_t bc = idtx_skeleton_get_bone_count(skel);
+            for (int32_t i = 0; i < bc; ++i) {
+                float m[16];
+                idtx_skeleton_get_bone_bind(skel, i, m);
+                rotate_mat4(m);
+                idtx_skeleton_set_bone_bind(skel, i, m);
+
+                if (idtx_skeleton_get_bone_parent(skel, i) < 0) {
+                    idtx_skeleton_get_bone_rest(skel, i, m);
+                    rotate_mat4(m);
+                    idtx_skeleton_set_bone_rest(skel, i, m);
+                }
+            }
+        }
+
+        // Mesh positions + normals. For SKINNED meshes, vertex
+        // positions live in the (bind-time) mesh-local frame; the
+        // bind matrices we just rotated reproject them on the GPU.
+        // For UNSKINNED meshes, the mesh node's transform handles
+        // positioning. In both cases the per-vertex data is in a
+        // Z-up frame and needs the rotation baked in so consumers
+        // that respect Y-up convention render correctly.
+        int32_t mesh_count_local = idtx_avatar_get_mesh_count(avatar);
+        for (int32_t mi = 0; mi < mesh_count_local; ++mi) {
+            auto* mh = idtx_avatar_get_mesh(avatar, mi);
+            if (mh == nullptr) continue;
+            int32_t vc = idtx_mesh_get_vertex_count(mh);
+            if (vc <= 0) continue;
+            std::vector<float> pos(static_cast<size_t>(vc) * 3);
+            idtx_mesh_get_positions(mh, pos.data());
+            for (int32_t v = 0; v < vc; ++v) {
+                rotate_vec3(pos[v*3], pos[v*3+1], pos[v*3+2]);
+            }
+            std::vector<float> nrm;
+            if (idtx_mesh_has_normals(mh)) {
+                nrm.resize(static_cast<size_t>(vc) * 3);
+                idtx_mesh_get_normals(mh, nrm.data());
+                for (int32_t v = 0; v < vc; ++v) {
+                    rotate_vec3(nrm[v*3], nrm[v*3+1], nrm[v*3+2]);
+                }
+            }
+            // Re-set vertices (positions + optionally normals; keep
+            // existing uvs / colors). idtx_mesh_set_vertices reads
+            // existing buffers for the optional channels.
+            std::vector<float> uvs, cols;
+            if (idtx_mesh_has_uvs(mh)) {
+                uvs.resize(static_cast<size_t>(vc) * 2);
+                idtx_mesh_get_uvs(mh, uvs.data());
+            }
+            if (idtx_mesh_has_colors(mh)) {
+                cols.resize(static_cast<size_t>(vc) * 4);
+                idtx_mesh_get_colors(mh, cols.data());
+            }
+            idtx_mesh_set_vertices(mh, vc, pos.data(),
+                nrm.empty() ? nullptr : nrm.data(),
+                uvs.empty() ? nullptr : uvs.data(),
+                cols.empty() ? nullptr : cols.data());
+        }
+
+        // Spring-bone gravity dirs (world-space directions).
+        int32_t chain_count_local = idtx_avatar_get_spring_chain_count(avatar);
+        for (int32_t i = 0; i < chain_count_local; ++i) {
+            auto* ch = idtx_avatar_get_spring_chain(avatar, i);
+            float g[3]; idtx_spring_chain_get_gravity_dir(ch, g);
+            rotate_vec3(g[0], g[1], g[2]);
+            idtx_spring_chain_set_gravity_dir(ch, g[0], g[1], g[2]);
+        }
+
+        // Avatar root transform — pre-rotation it was an identity
+        // (or whatever the SkelRoot's local xform encoded) in the
+        // Z-up frame. We already rotated the data we care about
+        // INTO Y-up, so the root_transform stays as-is — it
+        // represents "this avatar's identity transform in the new
+        // Y-up world frame".
     }
 
     return avatar;

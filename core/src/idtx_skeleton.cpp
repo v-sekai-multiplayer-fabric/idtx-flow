@@ -107,3 +107,17 @@ extern "C" IDTX_CORE_API void idtx_skeleton_get_bone_bind(const idtx_skeleton_t*
     }
     copy_matrix16(out_matrix, &skel->bind_matrices[index * 16]);
 }
+
+extern "C" IDTX_CORE_API void idtx_skeleton_set_bone_rest(idtx_skeleton_t* skel, int32_t index, const float matrix[16])
+{
+    if (skel == nullptr || matrix == nullptr) return;
+    if (index < 0 || index >= static_cast<int32_t>(skel->bone_names.size())) return;
+    copy_matrix16(&skel->rest_matrices[index * 16], matrix);
+}
+
+extern "C" IDTX_CORE_API void idtx_skeleton_set_bone_bind(idtx_skeleton_t* skel, int32_t index, const float matrix[16])
+{
+    if (skel == nullptr || matrix == nullptr) return;
+    if (index < 0 || index >= static_cast<int32_t>(skel->bone_names.size())) return;
+    copy_matrix16(&skel->bind_matrices[index * 16], matrix);
+}

@@ -95,6 +95,8 @@ IDTX_CORE_API const char* idtx_skeleton_get_bone_name(const idtx_skeleton_t* ske
 IDTX_CORE_API int32_t  idtx_skeleton_get_bone_parent(const idtx_skeleton_t* skel, int32_t index);
 IDTX_CORE_API void     idtx_skeleton_get_bone_rest(const idtx_skeleton_t* skel, int32_t index, float out_matrix[16]);
 IDTX_CORE_API void     idtx_skeleton_get_bone_bind(const idtx_skeleton_t* skel, int32_t index, float out_matrix[16]);
+IDTX_CORE_API void     idtx_skeleton_set_bone_rest(idtx_skeleton_t* skel, int32_t index, const float matrix[16]);
+IDTX_CORE_API void     idtx_skeleton_set_bone_bind(idtx_skeleton_t* skel, int32_t index, const float matrix[16]);
 
 // ---------------------------------------------------------------------
 // idtx_mesh — vertex / index / skinning data for a single mesh surface.
