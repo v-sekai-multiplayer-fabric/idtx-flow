@@ -55,6 +55,8 @@ def _build_idtx_core(env):
         "core/src/idtx_core.cpp",
         "core/src/idtx_skeleton.cpp",
         "core/src/idtx_mesh.cpp",
+        "core/src/idtx_material.cpp",
+        "core/src/idtx_avatar.cpp",
     ]
 
     library_name = f"libidtx_core.{platform_name}.{build_arch}"

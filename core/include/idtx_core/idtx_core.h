@@ -135,6 +135,95 @@ IDTX_CORE_API int32_t idtx_mesh_has_normals(const idtx_mesh_t* mesh);
 IDTX_CORE_API int32_t idtx_mesh_has_uvs    (const idtx_mesh_t* mesh);
 IDTX_CORE_API int32_t idtx_mesh_has_colors (const idtx_mesh_t* mesh);
 
+// ---------------------------------------------------------------------
+// idtx_material — PBR + MToon material parameters.
+//
+// PBR fields are the UsdPreviewSurface baseline (used when round-
+// tripping to MaterialX or UsdPreviewSurface). MToon fields are the
+// VRM-extension overlay; if any mtoon_* setter is called, the material
+// becomes flagged as MToon-typed and will round-trip via
+// VRMC_materials_mtoon / VSekaiMToonAPI instead of UsdPreviewSurface.
+// ---------------------------------------------------------------------
+
+typedef enum idtx_alpha_mode
+{
+    IDTX_ALPHA_OPAQUE = 0,
+    IDTX_ALPHA_MASK   = 1,
+    IDTX_ALPHA_BLEND  = 2,
+} idtx_alpha_mode_t;
+
+IDTX_CORE_API idtx_material_t* idtx_material_create(void);
+IDTX_CORE_API void             idtx_material_destroy(idtx_material_t* mat);
+
+IDTX_CORE_API void        idtx_material_set_name(idtx_material_t* mat, const char* name);
+IDTX_CORE_API const char* idtx_material_get_name(const idtx_material_t* mat);
+
+// PBR baseline
+IDTX_CORE_API void idtx_material_set_base_color(idtx_material_t* mat, float r, float g, float b, float a);
+IDTX_CORE_API void idtx_material_get_base_color(const idtx_material_t* mat, float out_rgba[4]);
+IDTX_CORE_API void idtx_material_set_metallic (idtx_material_t* mat, float metallic);
+IDTX_CORE_API void idtx_material_set_roughness(idtx_material_t* mat, float roughness);
+IDTX_CORE_API float idtx_material_get_metallic (const idtx_material_t* mat);
+IDTX_CORE_API float idtx_material_get_roughness(const idtx_material_t* mat);
+IDTX_CORE_API void idtx_material_set_alpha_mode(idtx_material_t* mat, idtx_alpha_mode_t mode);
+IDTX_CORE_API idtx_alpha_mode_t idtx_material_get_alpha_mode(const idtx_material_t* mat);
+IDTX_CORE_API void idtx_material_set_alpha_cutoff(idtx_material_t* mat, float cutoff);
+IDTX_CORE_API float idtx_material_get_alpha_cutoff(const idtx_material_t* mat);
+
+// Texture references — string paths. Empty / NULL means unset.
+IDTX_CORE_API void        idtx_material_set_base_color_texture(idtx_material_t* mat, const char* path);
+IDTX_CORE_API const char* idtx_material_get_base_color_texture(const idtx_material_t* mat);
+IDTX_CORE_API void        idtx_material_set_normal_texture(idtx_material_t* mat, const char* path);
+IDTX_CORE_API const char* idtx_material_get_normal_texture(const idtx_material_t* mat);
+
+// MToon overlay — calling any of these marks the material as MToon.
+IDTX_CORE_API void idtx_material_set_mtoon_shade_color(idtx_material_t* mat, float r, float g, float b);
+IDTX_CORE_API void idtx_material_set_mtoon_rim_color  (idtx_material_t* mat, float r, float g, float b);
+IDTX_CORE_API void idtx_material_set_mtoon_outline_width(idtx_material_t* mat, float width);
+IDTX_CORE_API int32_t idtx_material_is_mtoon(const idtx_material_t* mat);
+IDTX_CORE_API void idtx_material_get_mtoon_shade_color(const idtx_material_t* mat, float out_rgb[3]);
+IDTX_CORE_API void idtx_material_get_mtoon_rim_color  (const idtx_material_t* mat, float out_rgb[3]);
+IDTX_CORE_API float idtx_material_get_mtoon_outline_width(const idtx_material_t* mat);
+
+// ---------------------------------------------------------------------
+// idtx_avatar — the top-level container.
+//
+// Ownership: the avatar OWNS its handles. Adding a handle transfers
+// ownership; destroying the avatar frees all attached handles. Pass
+// NULL to add_* to detach a slot.
+//
+// Mesh-to-material binding is by index — material_index[i] is the
+// material attached to mesh[i] (or -1 for none).
+// Mesh-to-skeleton binding is implicit (single skeleton per avatar
+// in this MVP; multi-skeleton support can land if/when needed).
+// ---------------------------------------------------------------------
+
+IDTX_CORE_API idtx_avatar_t* idtx_avatar_create(void);
+IDTX_CORE_API void           idtx_avatar_destroy(idtx_avatar_t* avatar);
+
+IDTX_CORE_API void        idtx_avatar_set_name(idtx_avatar_t* avatar, const char* name);
+IDTX_CORE_API const char* idtx_avatar_get_name(const idtx_avatar_t* avatar);
+
+// Root transform: avatar's pose relative to its containing world.
+IDTX_CORE_API void idtx_avatar_set_root_transform(idtx_avatar_t* avatar, const float matrix[16]);
+IDTX_CORE_API void idtx_avatar_get_root_transform(const idtx_avatar_t* avatar, float out_matrix[16]);
+
+// Skeleton — at most one. Replacing destroys the previous skeleton.
+IDTX_CORE_API void idtx_avatar_set_skeleton(idtx_avatar_t* avatar, idtx_skeleton_t* skel);
+IDTX_CORE_API idtx_skeleton_t* idtx_avatar_get_skeleton(const idtx_avatar_t* avatar);
+
+// Mesh list. Returns the index assigned. material_index pairs the mesh
+// with the avatar's material slot at that index (or -1).
+IDTX_CORE_API int32_t idtx_avatar_add_mesh(idtx_avatar_t* avatar, idtx_mesh_t* mesh, int32_t material_index);
+IDTX_CORE_API int32_t idtx_avatar_get_mesh_count(const idtx_avatar_t* avatar);
+IDTX_CORE_API idtx_mesh_t* idtx_avatar_get_mesh(const idtx_avatar_t* avatar, int32_t index);
+IDTX_CORE_API int32_t idtx_avatar_get_mesh_material(const idtx_avatar_t* avatar, int32_t mesh_index);
+
+// Material list.
+IDTX_CORE_API int32_t idtx_avatar_add_material(idtx_avatar_t* avatar, idtx_material_t* mat);
+IDTX_CORE_API int32_t idtx_avatar_get_material_count(const idtx_avatar_t* avatar);
+IDTX_CORE_API idtx_material_t* idtx_avatar_get_material(const idtx_avatar_t* avatar, int32_t index);
+
 #ifdef __cplusplus
 }
 #endif
