@@ -15,6 +15,8 @@
 #include "nodes/UsdXFormNode3D.h"
 #include "utils/IDTXFlowGodotLogger.h"
 
+#include "exporter/IDTXFlowExporter.h"
+
 using namespace godot;
 
 // Static logger instance — lives for the lifetime of this dll
@@ -64,6 +66,7 @@ void initialize_idtxflow_module(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(UsdMultiMeshInstanceNode3D)
     GDREGISTER_CLASS(UsdSkeletonNode3D)
     GDREGISTER_CLASS(UsdStaticBodyNode3D)
+    GDREGISTER_CLASS(IDTXFlowExporter)
     
 #ifdef IDTXFLOW_MDL_ENABLED
     // activate the mdl material conversion
