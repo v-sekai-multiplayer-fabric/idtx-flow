@@ -51,7 +51,10 @@ def _build_idtx_core(env):
         core_env.Append(CCFLAGS=["-O3" if build_target == "template_release" else "-g"])
         core_env.Append(CPPDEFINES=["IDTX_CORE_BUILDING_DLL"])
 
-    sources = ["core/src/idtx_core.cpp"]
+    sources = [
+        "core/src/idtx_core.cpp",
+        "core/src/idtx_skeleton.cpp",
+    ]
 
     library_name = f"libidtx_core.{platform_name}.{build_arch}"
     library_extension = "dll" if platform_name == "windows" else ("dylib" if platform_name == "macos" else "so")
