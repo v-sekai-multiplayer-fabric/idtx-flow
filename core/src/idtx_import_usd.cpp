@@ -428,8 +428,16 @@ static idtx_spring_chain_t* read_spring_chain(pxr::UsdPrim const& prim)
         idtx_spring_chain_set_joints(chain, static_cast<int32_t>(j.size()), j.data());
     }
 
+    // Schema reserves `v_sekai:springBone:colliders` as a rel (the
+    // engine-side resolution form). The wire format the post-export
+    // hook + the C++ exporter share is the sibling attribute
+    // `v_sekai:springBone:colliderIndices` (int[]), which is what the
+    // C ABI's flat collider-index table consumes.
     pxr::VtArray<int> cols;
-    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:colliders"))) a.Get(&cols);
+    if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:colliderIndices"))) a.Get(&cols);
+    if (cols.empty()) {
+        if (auto a = prim.GetAttribute(pxr::TfToken("v_sekai:springBone:colliders"))) a.Get(&cols);
+    }
     for (auto const& c : cols) idtx_spring_chain_add_collider(chain, c);
 
     return chain;

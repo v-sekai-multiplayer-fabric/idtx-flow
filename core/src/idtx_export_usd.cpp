@@ -384,9 +384,16 @@ static void emit_spring_chain(
     if (cc > 0) {
         pxr::VtArray<int> cols; cols.reserve(cc);
         for (int32_t c = 0; c < cc; ++c) cols.push_back(idtx_spring_chain_get_collider(chain, c));
-        prim.CreateAttribute(
-            pxr::TfToken("v_sekai:springBone:colliders"),
-            pxr::SdfValueTypeNames->IntArray).Set(cols);
+        // Schema reserves `v_sekai:springBone:colliders` for the
+        // relationship form (rel → collider prim paths). For the
+        // wire-format int[] indices, author a sibling custom attr
+        // `v_sekai:springBone:colliderIndices` so USD doesn't reject
+        // the conflicting type at the same name.
+        pxr::UsdAttribute attr = prim.CreateAttribute(
+            pxr::TfToken("v_sekai:springBone:colliderIndices"),
+            pxr::SdfValueTypeNames->IntArray,
+            /*custom=*/true);
+        attr.Set(cols);
     }
 }
 
