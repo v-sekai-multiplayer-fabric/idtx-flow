@@ -224,6 +224,19 @@ IDTX_CORE_API int32_t idtx_avatar_add_material(idtx_avatar_t* avatar, idtx_mater
 IDTX_CORE_API int32_t idtx_avatar_get_material_count(const idtx_avatar_t* avatar);
 IDTX_CORE_API idtx_material_t* idtx_avatar_get_material(const idtx_avatar_t* avatar, int32_t index);
 
+// ---------------------------------------------------------------------
+// Top-level I/O entry points.
+//
+// Returns 0 on success, non-zero on failure. Error categories:
+//   1 = invalid argument (NULL avatar / NULL path)
+//   2 = USD stage creation failed (e.g. unwritable path)
+//   3 = USD write failed (Save() returned false)
+// ---------------------------------------------------------------------
+
+IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
+    const idtx_avatar_t* avatar,
+    const char* path);
+
 #ifdef __cplusplus
 }
 #endif
