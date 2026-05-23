@@ -140,9 +140,22 @@ static pxr::SdfPath emit_mesh(
     }
     usd_mesh.CreatePointsAttr().Set(points);
 
-    // Indices — assume triangle list; faceVertexCounts is all 3's.
-    int32_t face_count = ic / 3;
-    pxr::VtArray<int> face_vertex_counts(face_count, 3);
+    // Indices. faceVertexCounts comes from the mesh's override array
+    // when present (n-gon round-trip from CHI-252 sidecar), otherwise
+    // we fall back to a triangle-list assumption.
+    pxr::VtArray<int> face_vertex_counts;
+    int32_t fvc_count = idtx_mesh_get_face_vertex_count_count(mesh);
+    if (fvc_count > 0) {
+        std::vector<int32_t> fvc(static_cast<size_t>(fvc_count));
+        idtx_mesh_get_face_vertex_counts(mesh, fvc.data());
+        face_vertex_counts.reserve(fvc_count);
+        for (int32_t i = 0; i < fvc_count; ++i) {
+            face_vertex_counts.push_back(static_cast<int>(fvc[i]));
+        }
+    } else {
+        int32_t face_count = ic / 3;
+        face_vertex_counts.assign(face_count, 3);
+    }
     pxr::VtArray<int> face_vertex_indices;
     face_vertex_indices.reserve(ic);
     {

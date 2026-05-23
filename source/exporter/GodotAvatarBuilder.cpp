@@ -103,11 +103,16 @@ static ::idtx_skeleton_t* BuildSkeleton(godot::Skeleton3D* skel)
 
 // Translate one MeshInstance3D surface into an idtx_mesh_t. Multi-
 // surface meshes call this once per surface; the caller manages
-// adding each to the avatar.
+// adding each to the avatar. `source_node` (when non-null) is queried
+// for the n-gon sidecar metadata key
+// "idtx:original_face_vertex_counts/<surface_index>" (PackedInt32Array)
+// — when present, that override propagates through to the USD writer's
+// faceVertexCounts attribute.
 static ::idtx_mesh_t* BuildMeshFromSurface(
     godot::Ref<godot::Mesh> const& mesh,
     int surface_index,
-    godot::String const& base_name)
+    godot::String const& base_name,
+    godot::Node3D* source_node = nullptr)
 {
     if (mesh.is_null()) return nullptr;
     godot::Array arrays = mesh->surface_get_arrays(surface_index);
@@ -182,6 +187,29 @@ static ::idtx_mesh_t* BuildMeshFromSurface(
     std::vector<int32_t> idx_buf(indices.size());
     for (int i = 0; i < indices.size(); ++i) idx_buf[i] = indices[i];
     idtx_mesh_set_indices(out, indices.size(), idx_buf.data());
+
+    // n-gon sidecar lookup. The importer (CHI-251) stashes the
+    // original USD faceVertexCounts on the MeshInstance3D's metadata
+    // under "idtx:original_face_vertex_counts/<surface>" when the
+    // source mesh wasn't pure triangles. If present and the sum
+    // matches our index count, propagate to the idtx_mesh so the
+    // USD writer re-emits the n-gons instead of triangulating.
+    if (source_node != nullptr) {
+        godot::String key = godot::String("idtx:original_face_vertex_counts/")
+            + godot::String::num_int64(surface_index);
+        if (source_node->has_meta(key)) {
+            godot::PackedInt32Array fvc = source_node->get_meta(key);
+            if (fvc.size() > 0) {
+                int64_t sum = 0;
+                for (int i = 0; i < fvc.size(); ++i) sum += fvc[i];
+                if (sum == indices.size()) {
+                    std::vector<int32_t> fvc_buf(fvc.size());
+                    for (int i = 0; i < fvc.size(); ++i) fvc_buf[i] = fvc[i];
+                    idtx_mesh_set_face_vertex_counts(out, fvc.size(), fvc_buf.data());
+                }
+            }
+        }
+    }
 
     // Skinning — Godot stores 4 bones/vertex by default. Both arrays
     // must be present and length-matched to set skinning data.
@@ -408,7 +436,7 @@ static void CollectMeshes(
             int surface_count = mesh->get_surface_count();
             godot::String base = mi->get_name();
             for (int s = 0; s < surface_count; ++s) {
-                ::idtx_mesh_t* m = BuildMeshFromSurface(mesh, s, base);
+                ::idtx_mesh_t* m = BuildMeshFromSurface(mesh, s, base, mi);
                 if (m == nullptr) continue;
                 godot::Ref<godot::Material> surf_mat = mi->get_active_material(s);
                 int32_t mat_idx = AddOrLookupMaterial(avatar, cache, surf_mat);

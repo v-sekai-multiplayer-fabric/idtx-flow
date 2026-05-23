@@ -21,6 +21,7 @@ struct idtx_mesh
     std::vector<int32_t> indices;
     std::vector<int32_t> bone_indices;
     std::vector<float>   weights;
+    std::vector<int32_t> face_vertex_counts;  // empty = triangle list
 };
 
 static void copy_floats(std::vector<float>& dst, const float* src, size_t count)
@@ -153,3 +154,28 @@ extern "C" IDTX_CORE_API int32_t idtx_mesh_has_uvs(const idtx_mesh_t* mesh)
 
 extern "C" IDTX_CORE_API int32_t idtx_mesh_has_colors(const idtx_mesh_t* mesh)
 { return (mesh != nullptr && !mesh->colors.empty()) ? 1 : 0; }
+
+extern "C" IDTX_CORE_API void idtx_mesh_set_face_vertex_counts(
+    idtx_mesh_t* mesh, int32_t count, const int32_t* counts)
+{
+    if (mesh == nullptr) return;
+    if (count <= 0 || counts == nullptr) {
+        mesh->face_vertex_counts.clear();
+        return;
+    }
+    int64_t sum = 0;
+    for (int32_t i = 0; i < count; ++i) sum += counts[i];
+    if (sum != mesh->index_count) {
+        // Mismatched counts — refuse silently rather than corrupt
+        // the mesh on round trip. Caller should check by reading
+        // back idtx_mesh_get_face_vertex_count_count().
+        return;
+    }
+    mesh->face_vertex_counts.assign(counts, counts + count);
+}
+
+extern "C" IDTX_CORE_API int32_t idtx_mesh_get_face_vertex_count_count(const idtx_mesh_t* mesh)
+{ return (mesh != nullptr) ? static_cast<int32_t>(mesh->face_vertex_counts.size()) : 0; }
+
+extern "C" IDTX_CORE_API void idtx_mesh_get_face_vertex_counts(const idtx_mesh_t* mesh, int32_t* out)
+{ if (mesh != nullptr) copy_out_ints(mesh->face_vertex_counts, out); }

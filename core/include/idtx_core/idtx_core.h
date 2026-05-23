@@ -124,6 +124,20 @@ IDTX_CORE_API void idtx_mesh_set_skinning(
     const int32_t* bone_indices,
     const float* weights);
 
+// Override the default triangle-list face structure with custom
+// per-face vertex counts (e.g. n-gons preserved through a USD
+// round-trip). counts[i] is the number of vertices in face i;
+// the values must sum to the mesh's index_count or the call is
+// ignored. Passing count=0 / NULL clears the override and the
+// USD exporter reverts to emitting all-3s.
+IDTX_CORE_API void idtx_mesh_set_face_vertex_counts(
+    idtx_mesh_t* mesh,
+    int32_t count,
+    const int32_t* counts);
+
+IDTX_CORE_API int32_t idtx_mesh_get_face_vertex_count_count(const idtx_mesh_t* mesh);
+IDTX_CORE_API void    idtx_mesh_get_face_vertex_counts(const idtx_mesh_t* mesh, int32_t* out_counts);
+
 IDTX_CORE_API int32_t idtx_mesh_get_vertex_count(const idtx_mesh_t* mesh);
 IDTX_CORE_API int32_t idtx_mesh_get_index_count(const idtx_mesh_t* mesh);
 IDTX_CORE_API int32_t idtx_mesh_get_bones_per_vertex(const idtx_mesh_t* mesh);

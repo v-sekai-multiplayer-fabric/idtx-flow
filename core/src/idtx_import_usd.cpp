@@ -189,6 +189,20 @@ static idtx_mesh_t* read_mesh(pxr::UsdPrim const& prim)
     for (size_t i = 0; i < face_indices.size(); ++i) idx_buf[i] = face_indices[i];
     idtx_mesh_set_indices(mesh, static_cast<int32_t>(face_indices.size()), idx_buf.data());
 
+    // n-gon preservation: if the source USD carried non-triangulated
+    // faceVertexCounts (i.e. not all 3's), keep them on the handle so
+    // a Godot -> USD round-trip re-emits the original topology.
+    bool any_non_triangle = false;
+    for (auto c : face_counts) {
+        if (c != 3) { any_non_triangle = true; break; }
+    }
+    if (any_non_triangle && !face_counts.empty()) {
+        std::vector<int32_t> fvc(face_counts.size());
+        for (size_t i = 0; i < face_counts.size(); ++i) fvc[i] = face_counts[i];
+        idtx_mesh_set_face_vertex_counts(
+            mesh, static_cast<int32_t>(fvc.size()), fvc.data());
+    }
+
     // Skinning
     pxr::UsdSkelBindingAPI binding(prim);
     if (binding) {
