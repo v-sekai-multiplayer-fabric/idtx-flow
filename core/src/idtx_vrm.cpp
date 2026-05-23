@@ -267,9 +267,14 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
             auto* mat = idtx_avatar_get_material(avatar, mi);
             if (mat != nullptr && idtx_material_is_mtoon(mat)) { any_mtoon = true; break; }
         }
+        int32_t chain_count    = idtx_avatar_get_spring_chain_count(avatar);
+        int32_t collider_count = idtx_avatar_get_spring_collider_count(avatar);
+        bool any_spring = (chain_count > 0 || collider_count > 0);
+
         j.key("extensionsUsed"); j.begin_array();
             j.string("VRMC_vrm");
-            if (any_mtoon) j.string("VRMC_materials_mtoon");
+            if (any_mtoon)  j.string("VRMC_materials_mtoon");
+            if (any_spring) j.string("VRMC_springBone");
         j.end_array();
 
         // Scene + scenes
@@ -504,6 +509,95 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                     j.end_object();
                 j.end_object();
             j.end_object();
+
+            // VRMC_springBone — one colliderGroup per chain (containing
+            // the chain's referenced colliders), so each spring references
+            // its own group by index. Simpler than a global colliderGroups
+            // table and matches the per-chain ownership model.
+            if (any_spring) {
+                j.key("VRMC_springBone"); j.begin_object();
+                    j.key("specVersion"); j.string("1.0");
+                    if (collider_count > 0) {
+                        j.key("colliders"); j.begin_array();
+                        for (int32_t i = 0; i < collider_count; ++i) {
+                            auto* col = idtx_avatar_get_spring_collider(avatar, i);
+                            j.begin_object();
+                                int32_t b = idtx_spring_collider_get_attached_bone(col);
+                                j.key("node"); j.integer(bone_node_index(b));
+                                j.key("shape"); j.begin_object();
+                                    float off[3]; idtx_spring_collider_get_offset(col, off);
+                                    float rad = idtx_spring_collider_get_radius(col);
+                                    if (idtx_spring_collider_get_shape(col) == IDTX_COLLIDER_CAPSULE) {
+                                        float tail[3]; idtx_spring_collider_get_tail(col, tail);
+                                        j.key("capsule"); j.begin_object();
+                                            j.key("offset"); j.float_array(off,  3);
+                                            j.key("radius"); j.number(rad);
+                                            j.key("tail");   j.float_array(tail, 3);
+                                        j.end_object();
+                                    } else {
+                                        j.key("sphere"); j.begin_object();
+                                            j.key("offset"); j.float_array(off, 3);
+                                            j.key("radius"); j.number(rad);
+                                        j.end_object();
+                                    }
+                                j.end_object();
+                            j.end_object();
+                        }
+                        j.end_array();
+                    }
+
+                    if (chain_count > 0) {
+                        // colliderGroups parallel to chains.
+                        j.key("colliderGroups"); j.begin_array();
+                        for (int32_t i = 0; i < chain_count; ++i) {
+                            auto* chain = idtx_avatar_get_spring_chain(avatar, i);
+                            j.begin_object();
+                                j.key("name"); j.string(idtx_spring_chain_get_name(chain));
+                                j.key("colliders"); j.begin_array();
+                                    int32_t cc = idtx_spring_chain_get_collider_count(chain);
+                                    for (int32_t k = 0; k < cc; ++k) {
+                                        j.integer(idtx_spring_chain_get_collider(chain, k));
+                                    }
+                                j.end_array();
+                            j.end_object();
+                        }
+                        j.end_array();
+
+                        j.key("springs"); j.begin_array();
+                        for (int32_t i = 0; i < chain_count; ++i) {
+                            auto* chain = idtx_avatar_get_spring_chain(avatar, i);
+                            j.begin_object();
+                                j.key("name"); j.string(idtx_spring_chain_get_name(chain));
+                                j.key("joints"); j.begin_array();
+                                    int32_t jc = idtx_spring_chain_get_joint_count(chain);
+                                    float gdir[3]; idtx_spring_chain_get_gravity_dir(chain, gdir);
+                                    float stiff = idtx_spring_chain_get_stiffness(chain);
+                                    float drag  = idtx_spring_chain_get_drag(chain);
+                                    float gp    = idtx_spring_chain_get_gravity_power(chain);
+                                    float hr    = idtx_spring_chain_get_hit_radius(chain);
+                                    for (int32_t k = 0; k < jc; ++k) {
+                                        int32_t b = idtx_spring_chain_get_joint(chain, k);
+                                        j.begin_object();
+                                            j.key("node"); j.integer(bone_node_index(b));
+                                            j.key("hitRadius");    j.number(hr);
+                                            j.key("stiffness");    j.number(stiff);
+                                            j.key("gravityPower"); j.number(gp);
+                                            j.key("gravityDir");   j.float_array(gdir, 3);
+                                            j.key("dragForce");    j.number(drag);
+                                        j.end_object();
+                                    }
+                                j.end_array();
+                                if (idtx_spring_chain_get_collider_count(chain) > 0) {
+                                    j.key("colliderGroups"); j.begin_array();
+                                        j.integer(i);  // each chain owns colliderGroup[i]
+                                    j.end_array();
+                                }
+                            j.end_object();
+                        }
+                        j.end_array();
+                    }
+                j.end_object();
+            }
         j.end_object();
     j.end_object();
 
