@@ -3,6 +3,8 @@
 
 #include "GodotAvatarBuilder.h"
 
+#include <godot_cpp/classes/skeleton3d.hpp>
+#include <godot_cpp/core/object.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 
@@ -37,6 +39,48 @@ static void GodotTransformToFloat16(godot::Transform3D const& t, float out[16])
     out[15] = 1.0f;
 }
 
+// Depth-first search for the first Skeleton3D descendant. nullptr if
+// none. The MVP assumes one skeleton per avatar; multi-skeleton
+// avatars would need a list-returning variant.
+static godot::Skeleton3D* FindFirstSkeleton(godot::Node* node)
+{
+    if (node == nullptr) return nullptr;
+    auto* as_skel = godot::Object::cast_to<godot::Skeleton3D>(node);
+    if (as_skel != nullptr) return as_skel;
+    int n = node->get_child_count();
+    for (int i = 0; i < n; ++i) {
+        if (auto* found = FindFirstSkeleton(node->get_child(i))) return found;
+    }
+    return nullptr;
+}
+
+static ::idtx_skeleton_t* BuildSkeleton(godot::Skeleton3D* skel)
+{
+    if (skel == nullptr) return nullptr;
+    ::idtx_skeleton_t* out = ::idtx_skeleton_create();
+    godot::String name = skel->get_name();
+    idtx_skeleton_set_name(out, name.utf8().get_data());
+
+    int n = skel->get_bone_count();
+    for (int i = 0; i < n; ++i) {
+        godot::String bone_name = skel->get_bone_name(i);
+        int parent = skel->get_bone_parent(i);
+
+        float rest[16];
+        GodotTransformToFloat16(skel->get_bone_rest(i), rest);
+        float bind[16];
+        GodotTransformToFloat16(skel->get_bone_global_rest(i), bind);
+
+        idtx_skeleton_add_bone(
+            out,
+            bone_name.utf8().get_data(),
+            parent,
+            rest,
+            bind);
+    }
+    return out;
+}
+
 ::idtx_avatar_t* BuildIdtxAvatarFromGodotScene(godot::Node3D* root)
 {
     if (root == nullptr) return nullptr;
@@ -49,10 +93,11 @@ static void GodotTransformToFloat16(godot::Transform3D const& t, float out[16])
     GodotTransformToFloat16(root->get_transform(), root_xform);
     idtx_avatar_set_root_transform(avatar, root_xform);
 
-    // Skeleton, mesh, and material extraction land in subsequent cycles.
-    // Stub returns an avatar with just the root transform set — enough
-    // to round-trip the empty case through idtx_core_export_avatar_to_usd
-    // and confirm the link path works.
+    if (auto* skel = FindFirstSkeleton(root)) {
+        idtx_avatar_set_skeleton(avatar, BuildSkeleton(skel));
+    }
+
+    // Mesh + material extraction land in subsequent cycles.
     return avatar;
 }
 
