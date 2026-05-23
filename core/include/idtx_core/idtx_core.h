@@ -237,6 +237,13 @@ IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
     const idtx_avatar_t* avatar,
     const char* path);
 
+// Open a USD stage at `path` and rebuild an idtx_avatar_t* from its
+// default prim (or the first prim if no default is set). Returns NULL
+// on failure (NULL path, open failed, no usable root prim). Caller
+// owns the returned handle and frees with idtx_avatar_destroy.
+IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(
+    const char* path);
+
 #ifdef __cplusplus
 }
 #endif
