@@ -69,6 +69,10 @@ def _build_extension(env):
         f"{shared_include_path}",
         f"{ixws_path}",
         f"{usd_extension_path}/include",
+        # LEMON (cgg-bern/lemon @ cgg) — vendored as a submodule under
+        # libs/lemon for the CHI-253 tris-to-quads max-weight matching
+        # in source/exporter/UsdGodotStageExporter.cpp.
+        "libs/lemon",
     ])
 
     # Library paths

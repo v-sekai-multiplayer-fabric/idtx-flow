@@ -15,10 +15,12 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 
+#include <cmath>
 #include <unordered_map>
 
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/quatf.h>
+#include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/usd/usdGeom/scope.h>
@@ -29,6 +31,12 @@
 #include <pxr/usd/usdSkel/tokens.h>
 
 #include <godot_cpp/classes/skeleton3d.hpp>
+
+// LEMON's max-weight matching (libs/lemon/lemon/matching.h, cgg-bern
+// fork). Included only in the .cpp so the header doesn't pull the
+// LEMON dependency into every translation unit.
+#include <lemon/smart_graph.h>
+#include <lemon/matching.h>
 
 #include <idtxflow/logging.h>
 
@@ -152,23 +160,236 @@ namespace idtxflow::exporter
         return cyl;
     }
 
-    ReconstructedTopology ReconstructQuads(std::vector<int> const& triangulated_indices)
+    namespace {
+        // Triangle helpers used by ReconstructQuads. The triangle
+        // adjacency graph has one node per triangle and one edge
+        // between two triangles iff they share an edge (i.e. two
+        // vertex indices in common, in opposite winding).
+
+        struct TriEdge {
+            int a, b;  // canonical: a < b
+            TriEdge(int x, int y) : a(std::min(x, y)), b(std::max(x, y)) {}
+            bool operator==(TriEdge const& o) const { return a == o.a && b == o.b; }
+        };
+        struct TriEdgeHash {
+            size_t operator()(TriEdge const& e) const noexcept {
+                return std::hash<long long>()(
+                    (static_cast<long long>(e.a) << 32) | static_cast<unsigned int>(e.b));
+            }
+        };
+
+        // The "third vertex" of a triangle given the two endpoints of
+        // its shared edge. Returns -1 if the edge isn't in the triangle.
+        int OppositeVertex(int v0, int v1, int v2, int shared_a, int shared_b)
+        {
+            int s = (shared_a + shared_b);
+            if (v0 + v1 == s && (v0 == shared_a || v0 == shared_b)) return v2;
+            if (v0 + v2 == s && (v0 == shared_a || v0 == shared_b)) return v1;
+            if (v1 + v2 == s && (v1 == shared_a || v1 == shared_b)) return v0;
+            // Robust fallback: linear check.
+            if (v0 != shared_a && v0 != shared_b) return v0;
+            if (v1 != shared_a && v1 != shared_b) return v1;
+            if (v2 != shared_a && v2 != shared_b) return v2;
+            return -1;
+        }
+
+        pxr::GfVec3f TriNormal(pxr::GfVec3f const& p0,
+                                pxr::GfVec3f const& p1,
+                                pxr::GfVec3f const& p2)
+        {
+            pxr::GfVec3f n = pxr::GfCross(p1 - p0, p2 - p0);
+            float l = n.GetLength();
+            return (l > 1e-12f) ? (n / l) : pxr::GfVec3f(0, 0, 1);
+        }
+
+        // True iff the quad (a, b, c, d) is convex in its average
+        // plane. Tested via the sign of consecutive 2D cross products
+        // after projecting onto a basis orthogonal to the face normal.
+        bool QuadIsConvex(pxr::GfVec3f const& a,
+                          pxr::GfVec3f const& b,
+                          pxr::GfVec3f const& c,
+                          pxr::GfVec3f const& d)
+        {
+            pxr::GfVec3f n = TriNormal(a, b, c) + TriNormal(a, c, d);
+            float nl = n.GetLength();
+            if (nl < 1e-12f) return false;
+            n /= nl;
+            pxr::GfVec3f e1 = (b - a);
+            float e1l = e1.GetLength();
+            if (e1l < 1e-12f) return false;
+            e1 /= e1l;
+            pxr::GfVec3f e2 = pxr::GfCross(n, e1);
+
+            auto proj = [&](pxr::GfVec3f const& p) {
+                pxr::GfVec3f v = p - a;
+                return pxr::GfVec2f(pxr::GfDot(v, e1), pxr::GfDot(v, e2));
+            };
+            pxr::GfVec2f p[4] = { proj(a), proj(b), proj(c), proj(d) };
+            float prev_cross = 0.0f;
+            for (int i = 0; i < 4; ++i) {
+                pxr::GfVec2f u = p[(i + 1) % 4] - p[i];
+                pxr::GfVec2f v = p[(i + 2) % 4] - p[(i + 1) % 4];
+                float c2 = u[0] * v[1] - u[1] * v[0];
+                if (i > 0 && (c2 * prev_cross) < 0.0f) return false;
+                prev_cross = c2;
+            }
+            return true;
+        }
+    }
+
+    ReconstructedTopology ReconstructQuads(
+        std::vector<int> const& triangulated_indices,
+        pxr::VtArray<pxr::GfVec3f> const& vertices,
+        pxr::VtArray<pxr::GfVec2f> const& uvs,
+        float planarity_max_degrees,
+        bool  uv_seam_check)
     {
-        // CHI-253 hook. Today's behaviour: pass-through (write the
-        // triangle indices as 3-vertex faces). Once CHI-253 lands its
-        // Lean → Slang ILP shader the body of this function dispatches
-        // it via RenderingDevice and returns the recovered topology.
-        //
-        // The CPU fallback (HiGHS / CBC) lands here too, behind a
-        // --solver=cpu flag. The interface is stable: input is the
-        // flat triangle index array, output is the (counts, indices)
-        // pair UsdGeomMesh consumes directly.
         ReconstructedTopology out;
         int tri_count = static_cast<int>(triangulated_indices.size()) / 3;
-        out.face_vertex_counts.reserve(tri_count);
-        out.face_vertex_indices = triangulated_indices;
+        if (tri_count <= 1) {
+            out.face_vertex_counts.reserve(tri_count);
+            out.face_vertex_indices = triangulated_indices;
+            for (int t = 0; t < tri_count; ++t) out.face_vertex_counts.push_back(3);
+            return out;
+        }
+
+        // 1. Build edge -> [triangle ids] map. Each interior edge
+        //    appears in exactly 2 triangles in a manifold mesh.
+        std::unordered_map<TriEdge, std::vector<int>, TriEdgeHash> edge_to_tris;
+        edge_to_tris.reserve(tri_count * 3);
         for (int t = 0; t < tri_count; ++t) {
+            int i0 = triangulated_indices[3*t + 0];
+            int i1 = triangulated_indices[3*t + 1];
+            int i2 = triangulated_indices[3*t + 2];
+            edge_to_tris[TriEdge(i0, i1)].push_back(t);
+            edge_to_tris[TriEdge(i1, i2)].push_back(t);
+            edge_to_tris[TriEdge(i2, i0)].push_back(t);
+        }
+
+        // 2. Set up the LEMON graph: one node per triangle, one
+        //    candidate matching edge per shared edge between
+        //    triangles that passes the quality filters.
+        lemon::SmartGraph g;
+        std::vector<lemon::SmartGraph::Node> tri_node(tri_count);
+        for (int t = 0; t < tri_count; ++t) tri_node[t] = g.addNode();
+        lemon::SmartGraph::EdgeMap<double> weight(g);
+
+        // For each candidate, remember which shared edge produced it
+        // so we can rebuild the quad winding when emitting.
+        struct CandidateEdge {
+            int tri_a, tri_b;
+            int shared_v0, shared_v1;   // canonical endpoints of the dissolved edge
+        };
+        std::vector<CandidateEdge> candidates;
+        candidates.reserve(edge_to_tris.size());
+        std::vector<lemon::SmartGraph::Edge> cand_edges;
+        cand_edges.reserve(edge_to_tris.size());
+
+        float planarity_cos_threshold = std::cos(
+            planarity_max_degrees * 3.14159265358979f / 180.0f);
+
+        for (auto const& kv : edge_to_tris) {
+            if (kv.second.size() != 2) continue;  // boundary or non-manifold
+            int ta = kv.second[0];
+            int tb = kv.second[1];
+            int sa = kv.first.a;
+            int sb = kv.first.b;
+
+            int ta_i0 = triangulated_indices[3*ta + 0];
+            int ta_i1 = triangulated_indices[3*ta + 1];
+            int ta_i2 = triangulated_indices[3*ta + 2];
+            int tb_i0 = triangulated_indices[3*tb + 0];
+            int tb_i1 = triangulated_indices[3*tb + 1];
+            int tb_i2 = triangulated_indices[3*tb + 2];
+
+            int opp_a = OppositeVertex(ta_i0, ta_i1, ta_i2, sa, sb);
+            int opp_b = OppositeVertex(tb_i0, tb_i1, tb_i2, sa, sb);
+            if (opp_a < 0 || opp_b < 0) continue;
+
+            // Planarity gate via normal-dot.
+            if (sa >= (int)vertices.size() || sb >= (int)vertices.size()
+                || opp_a >= (int)vertices.size() || opp_b >= (int)vertices.size()) continue;
+            pxr::GfVec3f na = TriNormal(vertices[ta_i0], vertices[ta_i1], vertices[ta_i2]);
+            pxr::GfVec3f nb = TriNormal(vertices[tb_i0], vertices[tb_i1], vertices[tb_i2]);
+            float cos_nn = pxr::GfDot(na, nb);
+            if (cos_nn < planarity_cos_threshold) continue;
+
+            // Convexity gate.
+            pxr::GfVec3f const& va = vertices[opp_a];
+            pxr::GfVec3f const& vsa = vertices[sa];
+            pxr::GfVec3f const& vb = vertices[opp_b];
+            pxr::GfVec3f const& vsb = vertices[sb];
+            if (!QuadIsConvex(va, vsa, vb, vsb)) continue;
+
+            // UV-seam gate (skip when UVs aren't available).
+            if (uv_seam_check && !uvs.empty()) {
+                // The two triangles share endpoints sa, sb. In a UV
+                // seam the same vertex index would map to different
+                // UV coords in each surface — but at the mesh level
+                // we only see one UV per vertex index, so a UV
+                // mismatch shows up as the same index referenced by
+                // both triangles with the same UV (i.e. no seam, OK).
+                // For our purposes the check reduces to "same vertex
+                // index used by both triangles for the shared edge",
+                // which is implicit. The genuine seam case lives in
+                // duplicated vertices upstream — when those exist
+                // edge_to_tris matches by index so the two halves of
+                // the seam never end up in the same key.
+                // (No filter to apply here in the index-deduplicated
+                // case; left as a documented seam.)
+            }
+
+            // Score = planarity quality. Range [-1, 1]; scale into a
+            // positive integer-friendly weight for LEMON.
+            double score = static_cast<double>(cos_nn) + 1.0;  // [0, 2]
+            lemon::SmartGraph::Edge e = g.addEdge(tri_node[ta], tri_node[tb]);
+            weight[e] = score;
+            candidates.push_back({ta, tb, sa, sb});
+            cand_edges.push_back(e);
+        }
+
+        // 3. Run max-weight matching.
+        lemon::MaxWeightedMatching<lemon::SmartGraph,
+            lemon::SmartGraph::EdgeMap<double>> matcher(g, weight);
+        matcher.run();
+
+        // 4. Emit: for each matched pair, write the quad; for each
+        //    unmatched triangle, write the triangle.
+        std::vector<bool> consumed(tri_count, false);
+        out.face_vertex_counts.reserve(tri_count);
+        out.face_vertex_indices.reserve(triangulated_indices.size());
+
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            if (!matcher.matching(cand_edges[i])) continue;
+            CandidateEdge const& c = candidates[i];
+            if (consumed[c.tri_a] || consumed[c.tri_b]) continue;
+
+            int ta = c.tri_a, tb = c.tri_b;
+            int ta_i0 = triangulated_indices[3*ta + 0];
+            int ta_i1 = triangulated_indices[3*ta + 1];
+            int ta_i2 = triangulated_indices[3*ta + 2];
+            int tb_i0 = triangulated_indices[3*tb + 0];
+            int tb_i1 = triangulated_indices[3*tb + 1];
+            int tb_i2 = triangulated_indices[3*tb + 2];
+
+            int opp_a = OppositeVertex(ta_i0, ta_i1, ta_i2, c.shared_v0, c.shared_v1);
+            int opp_b = OppositeVertex(tb_i0, tb_i1, tb_i2, c.shared_v0, c.shared_v1);
+            // Quad winding: opp_a, shared_v0, opp_b, shared_v1.
+            // (Standard "fan dissolved across shared edge" order.)
+            out.face_vertex_counts.push_back(4);
+            out.face_vertex_indices.push_back(opp_a);
+            out.face_vertex_indices.push_back(c.shared_v0);
+            out.face_vertex_indices.push_back(opp_b);
+            out.face_vertex_indices.push_back(c.shared_v1);
+            consumed[ta] = true;
+            consumed[tb] = true;
+        }
+        for (int t = 0; t < tri_count; ++t) {
+            if (consumed[t]) continue;
             out.face_vertex_counts.push_back(3);
+            out.face_vertex_indices.push_back(triangulated_indices[3*t + 0]);
+            out.face_vertex_indices.push_back(triangulated_indices[3*t + 1]);
+            out.face_vertex_indices.push_back(triangulated_indices[3*t + 2]);
         }
         return out;
     }
@@ -259,15 +480,42 @@ namespace idtxflow::exporter
                 tri_indices.push_back(index_base + indices[i]);
             }
 
+            // Collect per-surface vertex slice + UVs for the
+            // reconstruction call (it needs positions to gate
+            // candidates by planarity/convexity).
+            pxr::VtArray<pxr::GfVec3f> surf_verts;
+            surf_verts.reserve(verts.size());
+            for (int i = 0; i < verts.size(); ++i) {
+                godot::Vector3 v = verts[i];
+                surf_verts.push_back(pxr::GfVec3f(v.x, v.y, v.z));
+            }
+            pxr::VtArray<pxr::GfVec2f> surf_uvs;
+            if (arrays.size() > godot::Mesh::ARRAY_TEX_UV) {
+                godot::PackedVector2Array godot_uvs = arrays[godot::Mesh::ARRAY_TEX_UV];
+                if (godot_uvs.size() == verts.size()) {
+                    surf_uvs.reserve(godot_uvs.size());
+                    for (int i = 0; i < godot_uvs.size(); ++i) {
+                        godot::Vector2 uv = godot_uvs[i];
+                        surf_uvs.push_back(pxr::GfVec2f(uv.x, uv.y));
+                    }
+                }
+            }
+            // tri_indices were built with index_base offset; for the
+            // reconstruction call we work in the surface-local index
+            // space, then re-add the base when emitting.
+            std::vector<int> local_tri_indices(indices.size());
+            for (int i = 0; i < indices.size(); ++i) local_tri_indices[i] = indices[i];
+
             if (TryReadSidecarFaceCounts(mesh, s, sidecar_counts)) {
                 // Sidecar path — write counts verbatim, indices are
                 // already in n-gon order on the original USD.
                 for (int c : sidecar_counts) face_vertex_counts.push_back(c);
                 for (int v : tri_indices)    face_vertex_indices.push_back(v);
             } else if (reconstruct) {
-                ReconstructedTopology recovered = ReconstructQuads(tri_indices);
+                ReconstructedTopology recovered = ReconstructQuads(
+                    local_tri_indices, surf_verts, surf_uvs);
                 for (int c : recovered.face_vertex_counts)  face_vertex_counts.push_back(c);
-                for (int v : recovered.face_vertex_indices) face_vertex_indices.push_back(v);
+                for (int v : recovered.face_vertex_indices) face_vertex_indices.push_back(index_base + v);
             } else {
                 int tri_count = static_cast<int>(indices.size()) / 3;
                 for (int t = 0; t < tri_count; ++t) {

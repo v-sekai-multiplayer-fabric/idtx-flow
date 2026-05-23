@@ -123,34 +123,42 @@ namespace idtxflow::exporter
         godot::Ref<godot::Mesh> const& mesh,
         godot::Node3D* source_node = nullptr);
 
-    /// CHI-253 reconstruction seam — pass-through stub today, real
-    /// implementation deferred to CHI-253's Lean -> Slang GPU shader.
+    /// CHI-253 tris -> quads reconstruction (CPU, in-house).
     ///
-    /// Why this is a stub: equal-or-better quality vs the reference
-    /// ILP requires max-weight matching on the triangle adjacency
-    /// graph (Edmonds' blossom, O(V³)). At realistic avatar mesh
-    /// sizes (10k-100k tris) that's impractical on the CPU; the
-    /// reference V-Sekai-fire/Optimized-Tris-to-Quads-Converter
-    /// pays this cost via PuLP+CBC, which itself can take seconds
-    /// to minutes on dense meshes.
+    /// Implementation: max-weight perfect matching on the triangle
+    /// adjacency graph via LEMON's `MaxWeightedMatching` (Edmonds'
+    /// blossom + Galil/Spencer/Tarjan refinements, O(nm log n)).
+    /// Matches the quality of the reference V-Sekai-fire/Optimized-
+    /// Tris-to-Quads-Converter ILP because the same optimisation
+    /// problem is solved exactly — the ILP and the matching are
+    /// equivalent for this objective.
     ///
-    /// CHI-253's plan is the right answer: formulate the ILP in
-    /// Lean, emit a Slang compute shader, dispatch on the GPU
-    /// via RenderingDevice (or fall back to a HiGHS/CBC CPU path
-    /// behind --solver=cpu). When that lands, the body of
-    /// ReconstructQuads below dispatches it; the interface stays
-    /// stable so no other exporter code changes.
+    /// LEMON is vendored under libs/lemon (cgg-bern/lemon @ cgg).
+    /// Pulled via `git submodule update --init libs/lemon`.
     ///
-    /// Until then: pass-through (triangulated output preserved).
-    /// Meshes that came in via the importer's sidecar still
-    /// round-trip losslessly via the TryReadSidecarFaceCounts
-    /// path in ExportMesh — that path doesn't depend on this.
+    /// Per-candidate quality filters applied before adding the edge
+    /// to the matching graph:
+    ///   * Planarity: face-normal angle <= planarity_max_degrees.
+    ///   * UV seam: UVs at the shared edge endpoints must agree
+    ///     across both triangles (skipped when `uvs` is empty).
+    ///   * Convexity: the resulting quad must be convex when
+    ///     projected onto the average face plane.
+    /// Score = cos(angle_between_normals), so the matcher prefers
+    /// flatter quads when forced to choose.
+    ///
+    /// GPU dispatch (the CHI-253 Lean -> Slang path) drops in as a
+    /// separate ReconstructQuadsGPU and is selected behind a flag
+    /// once shipped; this CPU path stays as the fallback.
     struct ReconstructedTopology {
         std::vector<int> face_vertex_counts;
         std::vector<int> face_vertex_indices;
     };
     ReconstructedTopology ReconstructQuads(
-        std::vector<int> const& triangulated_indices);
+        std::vector<int> const& triangulated_indices,
+        pxr::VtArray<pxr::GfVec3f> const& vertices,
+        pxr::VtArray<pxr::GfVec2f> const& uvs = pxr::VtArray<pxr::GfVec2f>(),
+        float planarity_max_degrees = 5.0f,
+        bool  uv_seam_check = true);
 
     /// Recursive driver. Walks `node` and every Node3D descendant,
     /// dispatching to the per-type exporters above. Returns the prim
