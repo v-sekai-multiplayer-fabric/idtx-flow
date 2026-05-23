@@ -51,11 +51,37 @@ static pxr::UsdPrim pick_avatar_root(pxr::UsdStageRefPtr const& stage)
     return pxr::UsdPrim();
 }
 
-// Find the first UsdSkelSkeleton anywhere under `root`. Returns
-// invalid UsdPrim if none.
+// Find the UsdSkelSkeleton bound by the meshes inside `root`.
+// Per UsdSkel conventions, every skinned UsdGeomMesh carries a
+// `skel:skeleton` relationship to the authoritative Skeleton. The
+// VRM skeleton is whichever Skeleton the majority of meshes
+// reference — using the binding (not just the first Skeleton spec
+// found in the tree) is well-specified by the UsdSkel docs:
+// https://openusd.org/dev/api/_usd_skel__schemas.html#UsdSkel_Skeleton
+// Falls back to "first Skeleton under `root`" only when no mesh
+// declares a binding (degenerate test fixtures).
 static pxr::UsdPrim find_first_skeleton_prim(pxr::UsdPrim const& root)
 {
     if (!root.IsValid()) return pxr::UsdPrim();
+    std::unordered_map<std::string, int> binding_counts;
+    for (auto const& p : pxr::UsdPrimRange(root)) {
+        if (!p.IsA<pxr::UsdGeomMesh>()) continue;
+        pxr::UsdRelationship rel = p.GetRelationship(pxr::TfToken("skel:skeleton"));
+        if (!rel) continue;
+        pxr::SdfPathVector targets;
+        rel.GetTargets(&targets);
+        for (auto const& t : targets) binding_counts[t.GetString()] += 1;
+    }
+    if (!binding_counts.empty()) {
+        std::string winner;
+        int winner_n = -1;
+        for (auto const& kv : binding_counts) {
+            if (kv.second > winner_n) { winner = kv.first; winner_n = kv.second; }
+        }
+        pxr::UsdPrim sk = root.GetStage()->GetPrimAtPath(pxr::SdfPath(winner));
+        if (sk.IsValid() && sk.IsA<pxr::UsdSkelSkeleton>()) return sk;
+    }
+    // Fallback: first Skeleton in tree order (fixtures with no binding).
     for (auto const& p : pxr::UsdPrimRange(root)) {
         if (p.IsA<pxr::UsdSkelSkeleton>()) return p;
     }

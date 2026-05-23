@@ -53,6 +53,40 @@ bool is_humanoid_bone(const char* name)
     return false;
 }
 
+namespace {
+    // Canonicalise: lowercase ASCII, strip non-alphanumeric. Caller
+    // owns the buffer; returns the count written.
+    size_t canonicalize_lower(const char* in, char* out, size_t cap) {
+        size_t n = 0;
+        if (in == nullptr) { out[0] = '\0'; return 0; }
+        for (size_t i = 0; in[i] && n + 1 < cap; ++i) {
+            char c = in[i];
+            if (c >= 'A' && c <= 'Z')      out[n++] = static_cast<char>(c + ('a' - 'A'));
+            else if (c >= 'a' && c <= 'z') out[n++] = c;
+            else if (c >= '0' && c <= '9') out[n++] = c;
+            // skip _, ., -, /, etc.
+        }
+        out[n] = '\0';
+        return n;
+    }
+}
+
+const char* match_humanoid_bone(const char* name)
+{
+    if (name == nullptr) return nullptr;
+    char input_canon[64];
+    canonicalize_lower(name, input_canon, sizeof(input_canon));
+    if (input_canon[0] == '\0') return nullptr;
+    for (size_t i = 0; i < kHumanoidBoneCount; ++i) {
+        char canon[64];
+        canonicalize_lower(kHumanoidBoneNames[i], canon, sizeof(canon));
+        if (std::strcmp(canon, input_canon) == 0) {
+            return kHumanoidBoneNames[i];
+        }
+    }
+    return nullptr;
+}
+
 const char* const* humanoid_bone_names(size_t* out_count)
 {
     if (out_count != nullptr) *out_count = kHumanoidBoneCount;

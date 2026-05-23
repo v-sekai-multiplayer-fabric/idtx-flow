@@ -215,13 +215,59 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
         }
 
         // indices (uint32 — glTF doesn't have uint16/uint32 ambiguity
-        // when we always pick uint32 for the export).
+        // when we always pick uint32 for the export). glTF only
+        // supports triangle topology; if the source mesh carries
+        // n-gons via face_vertex_counts, fan-triangulate them here
+        // so the emitted index buffer is always a multiple of 3.
         std::vector<int32_t> idx(static_cast<size_t>(ic));
         idtx_mesh_get_indices(mh, idx.data());
-        std::vector<uint32_t> idxu(idx.begin(), idx.end());
+
+        int32_t fvc_count = idtx_mesh_get_face_vertex_count_count(mh);
+        std::vector<uint32_t> idxu;
+        if (fvc_count > 0) {
+            std::vector<int32_t> fvc(static_cast<size_t>(fvc_count));
+            idtx_mesh_get_face_vertex_counts(mh, fvc.data());
+            idxu.reserve(static_cast<size_t>(ic));   // upper bound
+            int32_t cursor = 0;
+            for (int32_t f = 0; f < fvc_count; ++f) {
+                int32_t n = fvc[f];
+                if (n < 3 || cursor + n > ic) {
+                    cursor += (n > 0 ? n : 0);
+                    continue;   // skip degenerate / out-of-bounds faces
+                }
+                // Fan triangulation: (v0,v1,v2), (v0,v2,v3), ...
+                uint32_t v0 = static_cast<uint32_t>(idx[cursor]);
+                for (int32_t k = 1; k + 1 < n; ++k) {
+                    idxu.push_back(v0);
+                    idxu.push_back(static_cast<uint32_t>(idx[cursor + k]));
+                    idxu.push_back(static_cast<uint32_t>(idx[cursor + k + 1]));
+                }
+                cursor += n;
+            }
+        } else {
+            // No face_vertex_counts → caller asserted tri-soup. An
+            // index count that isn't a multiple of 3 here is a bug
+            // upstream (importer / authoring tool) — silently trimming
+            // would discard real geometry, so we refuse and fail the
+            // mesh emission instead. The caller can re-import with
+            // face_vertex_counts set (then the n-gon triangulation
+            // branch above kicks in).
+            if (ic % 3 != 0) {
+                std::fprintf(stderr,
+                    "idtx_vrm: mesh %d has %d indices (not a multiple "
+                    "of 3) and no face_vertex_counts — refusing to emit "
+                    "corrupt glTF. Set face_vertex_counts so the writer "
+                    "can triangulate properly.\n", mi, ic);
+                return -1;
+            }
+            idxu.assign(idx.begin(), idx.end());
+        }
+
         uint32_t io = idtx::core::detail::append_to_bin(bin, idxu.data(), idxu.size() * sizeof(uint32_t));
         Accessor ai; ai.buffer_view = static_cast<int>(buffer_views.size());
-        ai.component_type = CT_UINT32; ai.count = ic; ai.type = "SCALAR"; ai.has_min_max = false;
+        ai.component_type = CT_UINT32;
+        ai.count = static_cast<int32_t>(idxu.size());
+        ai.type = "SCALAR"; ai.has_min_max = false;
         buffer_views.push_back({io, static_cast<uint32_t>(idxu.size() * sizeof(uint32_t)), TARGET_ELEMENT_ARRAY_BUFFER});
         mesh_primitives[mi].indices_accessor = static_cast<int>(accessors.size());
         accessors.push_back(ai);
@@ -293,14 +339,19 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
         mat_normal_tex[mi] = register_texture(idtx_material_get_normal_texture(mat));
     }
 
-    // For humanoid mapping, walk the bones once to find which bone
-    // (if any) carries each VRM 1.0 humanoid name.
+    // For humanoid mapping, walk the bones once and try fuzzy-match
+    // each against the VRM 1.0 humanoid canon (case + non-alphanumeric
+    // insensitive). Map keys are CANONICAL VRM names ("hips",
+    // "leftUpperLeg", ...); values are the bone indices in the
+    // idtx_skeleton. First-match-wins so duplicate-name authoring
+    // doesn't poison the table.
     std::unordered_map<std::string, int32_t> humanoid_to_bone;
     if (skel != nullptr) {
         for (int32_t i = 0; i < bone_count; ++i) {
             const char* bn = idtx_skeleton_get_bone_name(skel, i);
-            if (idtx::core::vrm::is_humanoid_bone(bn)) {
-                humanoid_to_bone[bn] = i;
+            const char* canon = idtx::core::vrm::match_humanoid_bone(bn);
+            if (canon != nullptr && humanoid_to_bone.find(canon) == humanoid_to_bone.end()) {
+                humanoid_to_bone[canon] = i;
             }
         }
     }
@@ -323,10 +374,29 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
         int32_t collider_count = idtx_avatar_get_spring_collider_count(avatar);
         bool any_spring = (chain_count > 0 || collider_count > 0);
 
+        // VRMC_vrm only when the skeleton has every required humanoid
+        // bone; otherwise we'd emit a malformed humanoid.humanBones
+        // that downstream importers reject. Same gate as the
+        // extensions block below.
+        static const char* const kVrmRequiredBonesUsed[] = {
+            "hips", "spine", "head",
+            "leftUpperLeg",  "leftLowerLeg",  "leftFoot",
+            "rightUpperLeg", "rightLowerLeg", "rightFoot",
+            "leftUpperArm",  "leftLowerArm",  "leftHand",
+            "rightUpperArm", "rightLowerArm", "rightHand",
+        };
+        bool can_emit_vrmc_vrm = true;
+        for (const char* required : kVrmRequiredBonesUsed) {
+            if (humanoid_to_bone.find(required) == humanoid_to_bone.end()) {
+                can_emit_vrmc_vrm = false;
+                break;
+            }
+        }
+
         j.key("extensionsUsed"); j.begin_array();
-            j.string("VRMC_vrm");
-            if (any_mtoon)  j.string("VRMC_materials_mtoon");
-            if (any_spring) j.string("VRMC_springBone");
+            if (can_emit_vrmc_vrm) j.string("VRMC_vrm");
+            if (any_mtoon)         j.string("VRMC_materials_mtoon");
+            if (any_spring)        j.string("VRMC_springBone");
         j.end_array();
 
         // Scene + scenes
@@ -575,25 +645,49 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
         }
 
         j.key("extensions"); j.begin_object();
-            j.key("VRMC_vrm"); j.begin_object();
-                j.key("specVersion"); j.string("1.0");
-                j.key("meta"); j.begin_object();
-                    j.key("name"); j.string(idtx_avatar_get_name(avatar));
-                    j.key("version"); j.string("1.0");
-                    j.key("authors"); j.begin_array(); j.string("idtx-flow"); j.end_array();
-                    j.key("licenseUrl"); j.string("https://vrm.dev/licenses/1.0/");
-                j.end_object();
-                j.key("humanoid"); j.begin_object();
-                    j.key("humanBones"); j.begin_object();
-                        for (auto const& kv : humanoid_to_bone) {
-                            j.key(kv.first.c_str());
-                            j.begin_object();
-                                j.key("node"); j.integer(bone_node_index(kv.second));
-                            j.end_object();
-                        }
+            // VRMC_vrm requires humanoid.humanBones to carry every
+            // VRM 1.0 required bone (hips, spine, head, all four
+            // limbs' upper/lower/foot/hand). If the source skeleton
+            // doesn't supply them, emitting a partial humanoid
+            // violates the spec schema — better to skip the whole
+            // VRMC_vrm extension and ship a "glTF without VRM"
+            // than to ship a malformed VRM that downstream tools
+            // (UniVRM, Godot godot-vrm) reject loudly.
+            static const char* const kVrmRequiredBones[] = {
+                "hips", "spine", "head",
+                "leftUpperLeg",  "leftLowerLeg",  "leftFoot",
+                "rightUpperLeg", "rightLowerLeg", "rightFoot",
+                "leftUpperArm",  "leftLowerArm",  "leftHand",
+                "rightUpperArm", "rightLowerArm", "rightHand",
+            };
+            bool humanoid_complete = true;
+            for (const char* required : kVrmRequiredBones) {
+                if (humanoid_to_bone.find(required) == humanoid_to_bone.end()) {
+                    humanoid_complete = false;
+                    break;
+                }
+            }
+            if (humanoid_complete) {
+                j.key("VRMC_vrm"); j.begin_object();
+                    j.key("specVersion"); j.string("1.0");
+                    j.key("meta"); j.begin_object();
+                        j.key("name"); j.string(idtx_avatar_get_name(avatar));
+                        j.key("version"); j.string("1.0");
+                        j.key("authors"); j.begin_array(); j.string("idtx-flow"); j.end_array();
+                        j.key("licenseUrl"); j.string("https://vrm.dev/licenses/1.0/");
+                    j.end_object();
+                    j.key("humanoid"); j.begin_object();
+                        j.key("humanBones"); j.begin_object();
+                            for (auto const& kv : humanoid_to_bone) {
+                                j.key(kv.first.c_str());
+                                j.begin_object();
+                                    j.key("node"); j.integer(bone_node_index(kv.second));
+                                j.end_object();
+                            }
+                        j.end_object();
                     j.end_object();
                 j.end_object();
-            j.end_object();
+            }
 
             // VRMC_springBone — one colliderGroup per chain (containing
             // the chain's referenced colliders), so each spring references
@@ -631,30 +725,56 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                         j.end_array();
                     }
 
+                    // colliderGroups: only emit for chains that have at
+                    // least one collider — empty `colliders` arrays
+                    // violate the VRMC_springBone spec
+                    // (colliderGroup.colliders minItems=1). Track
+                    // chain_idx → group_idx so each spring references
+                    // the right group below.
+                    std::vector<int32_t> chain_to_group(chain_count, -1);
                     if (chain_count > 0) {
-                        // colliderGroups parallel to chains.
-                        j.key("colliderGroups"); j.begin_array();
+                        int32_t group_idx = 0;
+                        bool any_group = false;
                         for (int32_t i = 0; i < chain_count; ++i) {
                             auto* chain = idtx_avatar_get_spring_chain(avatar, i);
-                            j.begin_object();
-                                j.key("name"); j.string(idtx_spring_chain_get_name(chain));
-                                j.key("colliders"); j.begin_array();
-                                    int32_t cc = idtx_spring_chain_get_collider_count(chain);
-                                    for (int32_t k = 0; k < cc; ++k) {
-                                        j.integer(idtx_spring_chain_get_collider(chain, k));
-                                    }
-                                j.end_array();
-                            j.end_object();
+                            if (idtx_spring_chain_get_collider_count(chain) > 0) {
+                                if (!any_group) {
+                                    j.key("colliderGroups"); j.begin_array();
+                                    any_group = true;
+                                }
+                                j.begin_object();
+                                    j.key("name"); j.string(idtx_spring_chain_get_name(chain));
+                                    j.key("colliders"); j.begin_array();
+                                        int32_t cc = idtx_spring_chain_get_collider_count(chain);
+                                        for (int32_t k = 0; k < cc; ++k) {
+                                            j.integer(idtx_spring_chain_get_collider(chain, k));
+                                        }
+                                    j.end_array();
+                                j.end_object();
+                                chain_to_group[i] = group_idx++;
+                            }
                         }
-                        j.end_array();
+                        if (any_group) j.end_array();
+                    }
 
-                        j.key("springs"); j.begin_array();
+                    // springs: skip chains with empty joint list
+                    // (schema requires springs[i].joints to be
+                    // minItems=1). The "any spring with joints"
+                    // check below also controls whether the
+                    // springs[] array gets opened at all.
+                    if (chain_count > 0) {
+                        bool any_emitted = false;
                         for (int32_t i = 0; i < chain_count; ++i) {
                             auto* chain = idtx_avatar_get_spring_chain(avatar, i);
+                            int32_t jc = idtx_spring_chain_get_joint_count(chain);
+                            if (jc <= 0) continue;
+                            if (!any_emitted) {
+                                j.key("springs"); j.begin_array();
+                                any_emitted = true;
+                            }
                             j.begin_object();
                                 j.key("name"); j.string(idtx_spring_chain_get_name(chain));
                                 j.key("joints"); j.begin_array();
-                                    int32_t jc = idtx_spring_chain_get_joint_count(chain);
                                     float gdir[3]; idtx_spring_chain_get_gravity_dir(chain, gdir);
                                     float stiff = idtx_spring_chain_get_stiffness(chain);
                                     float drag  = idtx_spring_chain_get_drag(chain);
@@ -672,14 +792,14 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
                                         j.end_object();
                                     }
                                 j.end_array();
-                                if (idtx_spring_chain_get_collider_count(chain) > 0) {
+                                if (chain_to_group[i] >= 0) {
                                     j.key("colliderGroups"); j.begin_array();
-                                        j.integer(i);  // each chain owns colliderGroup[i]
+                                        j.integer(chain_to_group[i]);
                                     j.end_array();
                                 }
                             j.end_object();
                         }
-                        j.end_array();
+                        if (any_emitted) j.end_array();
                     }
                 j.end_object();
             }
