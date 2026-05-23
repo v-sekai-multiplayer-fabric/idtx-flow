@@ -35,6 +35,7 @@ if ($usdchecker) {
 }
 
 $fixtures = @(
+    'roundtrip_canonical',     # tightest baseline — stays within the libidtx_core surface
     'minimal_with_schemas',
     'rich_avatar',
     'macbeth_colorchecker',
