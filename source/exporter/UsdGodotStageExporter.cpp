@@ -5,6 +5,9 @@
 
 #include "UsdGodotStageExporter.h"
 
+#include "GodotAvatarBuilder.h"
+#include "idtx_core/idtx_core.h"
+
 #include <cctype>
 #include <set>
 #include <sstream>
@@ -877,30 +880,20 @@ namespace idtxflow::exporter
         }
         std::string std_path = std::string(path.utf8().get_data());
 
-        pxr::UsdStageRefPtr stage = pxr::UsdStage::CreateNew(std_path);
-        if (!stage) {
-            IDTX_LOG(IDTX_ERROR, "UsdGodotStageExporter: failed to create stage at %s",
-                     std_path.c_str());
+        ::idtx_avatar_t* avatar = BuildIdtxAvatarFromGodotScene(root);
+        if (avatar == nullptr) {
+            IDTX_LOG(IDTX_ERROR, "UsdGodotStageExporter: avatar build failed");
             return false;
         }
-        stage->SetMetadata(pxr::TfToken("upAxis"), pxr::VtValue(pxr::TfToken("Y")));
-        stage->SetMetadata(pxr::TfToken("metersPerUnit"), pxr::VtValue(1.0));
 
-        // Root prim — emit a top-level Xform that mirrors the Godot
-        // root's transform so re-import lands the scene identically.
-        std::string root_name = SanitisePrimName(root->get_name());
-        pxr::SdfPath root_path = pxr::SdfPath(std::string("/") + root_name);
-        ExportXform(stage, root_path, root->get_transform());
-        stage->SetDefaultPrim(stage->GetPrimAtPath(root_path));
+        int32_t rc = ::idtx_core_export_avatar_to_usd(avatar, std_path.c_str());
+        ::idtx_avatar_destroy(avatar);
 
-        int n = root->get_child_count();
-        for (int i = 0; i < n; ++i) {
-            godot::Node3D* child = godot::Object::cast_to<godot::Node3D>(root->get_child(i));
-            if (child != nullptr) {
-                ExportNodeRecursive(stage, root_path, child);
-            }
+        if (rc != 0) {
+            IDTX_LOG(IDTX_ERROR, "UsdGodotStageExporter: core export failed (rc=%d) for %s",
+                     rc, std_path.c_str());
+            return false;
         }
-        stage->GetRootLayer()->Save();
         IDTX_LOG(IDTX_INFO, "UsdGodotStageExporter: wrote %s", std_path.c_str());
         return true;
     }
