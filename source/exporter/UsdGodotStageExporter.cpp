@@ -15,12 +15,15 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 
+#include <unordered_map>
+
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/quatf.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/usd/usdGeom/scope.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdShade/tokens.h>
 
 #include <idtxflow/logging.h>
 
@@ -261,6 +264,71 @@ namespace idtxflow::exporter
         }
 
         return my_path;
+    }
+
+    pxr::SdfPath ExportMaterial(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& mats_scope_path,
+        std::string const& desired_name,
+        godot::Ref<godot::BaseMaterial3D> const& mat)
+    {
+        if (!mat.is_valid()) return pxr::SdfPath();
+
+        pxr::SdfPath mat_path = mats_scope_path.AppendChild(pxr::TfToken(desired_name));
+        pxr::UsdShadeMaterial usd_mat = pxr::UsdShadeMaterial::Define(stage, mat_path);
+
+        // Pull the colour. BaseMaterial3D::get_albedo() works on every
+        // subclass that has an albedo, including StandardMaterial3D.
+        godot::Color albedo = mat->get_albedo();
+        float roughness = 0.5f;
+        float metallic  = 0.0f;
+        godot::Ref<godot::StandardMaterial3D> std_mat = mat;
+        if (std_mat.is_valid()) {
+            roughness = std_mat->get_roughness();
+            metallic  = std_mat->get_metallic();
+        }
+
+        // UsdPreviewSurface output (hdStorm + Blender's USD importer).
+        pxr::SdfPath preview_shader_path = mat_path.AppendChild(pxr::TfToken("PreviewSurface"));
+        pxr::UsdShadeShader preview = pxr::UsdShadeShader::Define(stage, preview_shader_path);
+        preview.CreateIdAttr(pxr::VtValue(pxr::TfToken("UsdPreviewSurface")));
+        preview.CreateInput(pxr::TfToken("diffuseColor"), pxr::SdfValueTypeNames->Color3f)
+            .Set(pxr::GfVec3f(albedo.r, albedo.g, albedo.b));
+        preview.CreateInput(pxr::TfToken("roughness"), pxr::SdfValueTypeNames->Float)
+            .Set(roughness);
+        preview.CreateInput(pxr::TfToken("metallic"), pxr::SdfValueTypeNames->Float)
+            .Set(metallic);
+        pxr::UsdShadeOutput preview_out = preview.CreateOutput(
+            pxr::TfToken("surface"), pxr::SdfValueTypeNames->Token);
+        usd_mat.CreateSurfaceOutput().ConnectToSource(preview_out);
+
+        // MaterialX twin (`outputs:mtlx:surface`). Standard surface
+        // shader for cross-renderer portability.
+        pxr::SdfPath mtlx_shader_path = mat_path.AppendChild(pxr::TfToken("MtlxSurface"));
+        pxr::UsdShadeShader mtlx = pxr::UsdShadeShader::Define(stage, mtlx_shader_path);
+        mtlx.CreateIdAttr(pxr::VtValue(pxr::TfToken("ND_standard_surface_surfaceshader")));
+        mtlx.CreateInput(pxr::TfToken("base_color"), pxr::SdfValueTypeNames->Color3f)
+            .Set(pxr::GfVec3f(albedo.r, albedo.g, albedo.b));
+        mtlx.CreateInput(pxr::TfToken("base"), pxr::SdfValueTypeNames->Float).Set(1.0f);
+        mtlx.CreateInput(pxr::TfToken("specular_roughness"), pxr::SdfValueTypeNames->Float)
+            .Set(roughness);
+        mtlx.CreateInput(pxr::TfToken("metalness"), pxr::SdfValueTypeNames->Float)
+            .Set(metallic);
+        pxr::UsdShadeOutput mtlx_out = mtlx.CreateOutput(
+            pxr::TfToken("out"), pxr::SdfValueTypeNames->Token);
+        usd_mat.CreateSurfaceOutput(pxr::TfToken("mtlx")).ConnectToSource(mtlx_out);
+
+        return mat_path;
+    }
+
+    void BindMaterial(pxr::UsdPrim const& geom_prim, pxr::SdfPath const& material_path)
+    {
+        if (!geom_prim || material_path.IsEmpty()) return;
+        pxr::UsdShadeMaterialBindingAPI binding =
+            pxr::UsdShadeMaterialBindingAPI::Apply(geom_prim);
+        pxr::UsdShadeMaterial mat = pxr::UsdShadeMaterial::Get(
+            geom_prim.GetStage(), material_path);
+        if (mat) binding.Bind(mat);
     }
 
     bool ExportSceneToFile(godot::Node3D* root, godot::String const& path)

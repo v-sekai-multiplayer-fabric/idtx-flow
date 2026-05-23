@@ -31,6 +31,9 @@
 #include <godot_cpp/classes/sphere_mesh.hpp>
 #include <godot_cpp/variant/string.hpp>
 
+#include <godot_cpp/classes/base_material3d.hpp>
+#include <godot_cpp/classes/standard_material3d.hpp>
+
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/cube.h>
 #include <pxr/usd/usdGeom/cylinder.h>
@@ -38,6 +41,9 @@
 #include <pxr/usd/usdGeom/sphere.h>
 #include <pxr/usd/usdGeom/xform.h>
 #include <pxr/usd/usdGeom/xformCommonAPI.h>
+#include <pxr/usd/usdShade/material.h>
+#include <pxr/usd/usdShade/materialBindingAPI.h>
+#include <pxr/usd/usdShade/shader.h>
 
 #include <idtxflow_godot/types/GodotTypes.h>
 
@@ -110,4 +116,35 @@ namespace idtxflow::exporter
     /// to match Godot's native convention; the importer adapts to
     /// authored values on the re-read.
     bool ExportSceneToFile(godot::Node3D* root, godot::String const& path);
+
+    // ----------------------------------------------------------------
+    // Cycle B — Materials.
+    //
+    // Each unique Godot BaseMaterial3D becomes a single Material prim
+    // under `/<root>/Materials/<sanitised_name>` carrying both a
+    // UsdPreviewSurface (`outputs:surface`) AND a MaterialX
+    // `ND_standard_surface_surfaceshader` (`outputs:mtlx:surface`),
+    // matching the Macbeth fixture convention from openusd-fabric.
+    //
+    // Geometry prims (Mesh / Cube / Sphere / Cylinder) apply
+    // MaterialBindingAPI + `material:binding` to point at the
+    // emitted material. The exporter caches material -> SdfPath so
+    // the same Godot material instance shared across N meshes
+    // produces exactly one Material prim.
+    // ----------------------------------------------------------------
+
+    /// Emit a Material prim under `mats_scope_path` mirroring the
+    /// values on a Godot BaseMaterial3D. Returns the SdfPath of the
+    /// Material so the caller can wire the geometry's material:binding.
+    pxr::SdfPath ExportMaterial(
+        pxr::UsdStageRefPtr const& stage,
+        pxr::SdfPath const& mats_scope_path,
+        std::string const& desired_name,
+        godot::Ref<godot::BaseMaterial3D> const& mat);
+
+    /// Apply MaterialBindingAPI on the geometry prim and bind to
+    /// `material_path`. No-op when `material_path` is empty.
+    void BindMaterial(
+        pxr::UsdPrim const& geom_prim,
+        pxr::SdfPath const& material_path);
 }
