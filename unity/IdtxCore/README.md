@@ -52,14 +52,37 @@ using (var avatar = new IdtxAvatar())
 }
 ```
 
+## Editor integration
+
+Drop a `.usda` / `.usdc` / `.usd` into `Assets/` and `IdtxUsdImporter`
+(under `Editor/`) automatically materializes it via `libidtx_core`'s
+USD reader, then through `UnityAvatarBridge.AvatarToGameObject`. The
+main asset is the reconstructed `GameObject`; sub-assets are the
+`Mesh`es and `Material`s it references so they survive re-import.
+
+`IdtxCoreLoader` runs at Editor startup (and every domain reload)
+to set `PXR_PLUGINPATH_NAME` to the V-Sekai schema directory — point
+at `Packages/com.vsekai.idtxcore/Schema/` when consumed as a UPM
+package, or whatever you set the env var to manually.
+
+To ship the V-Sekai schema alongside the package, copy
+`openusd-fabric/schema/plugInfo.json` + `v_sekai_schema.usda` into
+`unity/IdtxCore/Schema/`. Without it, the importer still produces
+geometry / skeleton / materials but `prim.HasAPI("VSekai*API")`
+returns false and the V-Sekai-specific attributes won't apply.
+
 ## Status
 
 | API | State |
 |---|---|
 | USD export / import | ✅ Working |
-| VRM export / import | 🚧 Stub (rc=99) — implementation in progress |
+| VRM export / import | ✅ Working (export full; import via cgltf) |
+| Editor ScriptedImporter | ✅ `IdtxUsdImporter` auto-materializes .usda/.usdc/.usd |
 | MToon material round-trip | ✅ via VSekaiMToonAPI / VRMC_materials_mtoon mapping |
-| Humanoid bone mapping (VRChat-ready) | 🚧 Follows VRM impl |
+| Humanoid bone mapping (VRChat-ready) | ✅ in VRM export; UniVRM picks it up |
+| Spring bones (chain + collider) | ✅ end-to-end USD ↔ VRM |
+| Physics colliders (incl. tapered) | ✅ USD round-trip via UsdPhysicsCollisionAPI + V-Sekai extension |
+| VRChat PhysBone auto-conversion | 🚧 Pending — needs VRC SDK references |
 
 ## Compatibility
 
