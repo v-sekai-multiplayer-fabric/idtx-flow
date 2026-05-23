@@ -250,7 +250,24 @@ static idtx_mesh_t* read_mesh(pxr::UsdPrim const& prim)
             mesh, static_cast<int32_t>(fvc.size()), fvc.data());
     }
 
-    // Skinning
+    // Skinning. UsdSkel allows a mesh to override the inherited
+    // Skeleton's `joints` array with its own per-mesh subset
+    // (`skel:joints` token[] on the mesh). When that override is
+    // present, per-vertex `primvars:skel:jointIndices` values are
+    // LOCAL to that subset — they index into `skel:joints` on the
+    // mesh, not into the Skeleton's global joints array.
+    //
+    // glTF's `skin.joints[]` is the SINGLE global list. We pick that
+    // list to be the Skeleton's full joints (idtx_skeleton bones in
+    // order). To make the per-vertex JOINTS_N values point at the
+    // right bones, we remap local subset indices to global indices
+    // by name lookup: find each local joint path in the global
+    // joints list and replace.
+    //
+    // Without this remap, meshes that USE the local-subset feature
+    // get every vertex skinned to whatever bone happens to sit at
+    // the same numerical index in the global array — the classic
+    // "spikes radiating from origin" Blender→Godot import artefact.
     pxr::UsdSkelBindingAPI binding(prim);
     if (binding) {
         pxr::VtArray<int>   ji_arr;
@@ -260,11 +277,61 @@ static idtx_mesh_t* read_mesh(pxr::UsdPrim const& prim)
         if (ji_pv && ji_pv.Get(&ji_arr) && jw_pv && jw_pv.Get(&jw_arr)
             && !ji_arr.empty() && ji_arr.size() == jw_arr.size()
             && (ji_arr.size() % static_cast<size_t>(vc)) == 0) {
+
+            // Build LOCAL -> GLOBAL remap if the mesh overrides
+            // skel:joints. Empty override means "inherit the
+            // Skeleton's joints"; in that case LOCAL == GLOBAL.
+            std::vector<int32_t> local_to_global;
+            pxr::UsdAttribute mesh_joints_attr = prim.GetAttribute(pxr::TfToken("skel:joints"));
+            if (mesh_joints_attr) {
+                pxr::VtArray<pxr::TfToken> mesh_joints;
+                mesh_joints_attr.Get(&mesh_joints);
+                if (!mesh_joints.empty()) {
+                    // Find the bound Skeleton's global joints list.
+                    pxr::UsdSkelSkeleton bound = binding.GetInheritedSkeleton();
+                    pxr::VtArray<pxr::TfToken> global_joints;
+                    if (bound) bound.GetJointsAttr().Get(&global_joints);
+                    // Index global by name for O(1) lookup.
+                    std::unordered_map<std::string, int32_t> global_idx;
+                    global_idx.reserve(global_joints.size());
+                    for (size_t i = 0; i < global_joints.size(); ++i) {
+                        global_idx[global_joints[i].GetString()] = static_cast<int32_t>(i);
+                    }
+                    local_to_global.resize(mesh_joints.size(), -1);
+                    for (size_t i = 0; i < mesh_joints.size(); ++i) {
+                        auto it = global_idx.find(mesh_joints[i].GetString());
+                        if (it != global_idx.end()) {
+                            local_to_global[i] = it->second;
+                        }
+                    }
+                }
+            }
+
             int32_t bpv = static_cast<int32_t>(ji_arr.size() / static_cast<size_t>(vc));
             std::vector<int32_t> ibuf(ji_arr.size());
             std::vector<float>   wbuf(jw_arr.size());
-            for (size_t i = 0; i < ji_arr.size(); ++i) ibuf[i] = ji_arr[i];
+            for (size_t i = 0; i < ji_arr.size(); ++i) {
+                int32_t v = ji_arr[i];
+                if (!local_to_global.empty()) {
+                    // Remap LOCAL -> GLOBAL. Out-of-range local indices
+                    // get -1 (will be clamped to 0 with zero weight
+                    // downstream); unmapped joints (Skeleton didn't
+                    // have that name) also -1.
+                    if (v >= 0 && v < static_cast<int32_t>(local_to_global.size())) {
+                        v = local_to_global[v];
+                    } else {
+                        v = -1;
+                    }
+                }
+                ibuf[i] = v;
+            }
             for (size_t i = 0; i < jw_arr.size(); ++i) wbuf[i] = jw_arr[i];
+
+            // Zero out weights for any unresolved bones (-1) so the
+            // GPU's `skin.joints[bone]` lookup doesn't read OOB.
+            for (size_t i = 0; i < ibuf.size(); ++i) {
+                if (ibuf[i] < 0) { ibuf[i] = 0; wbuf[i] = 0.0f; }
+            }
             idtx_mesh_set_skinning(mesh, bpv, ibuf.data(), wbuf.data());
         }
     }
