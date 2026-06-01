@@ -13,6 +13,20 @@ elimination. The lowered targets are committed at:
   core/share/godot_scn/godot_scn.spv   (SPIR-V binary, ~8 KB)
   core/share/godot_scn/godot_scn.spv.txt  (SPIR-V assembly, audit form)
 
+Why three targets and not just CPU:
+  CPU   — works HEADLESS. No GPU required. Every CI runner regardless
+          of hardware can compile and execute the .cpp. This is also
+          what libidtx_core links into the host binary for actual .scn
+          writing today.
+  Metal — exercises the macOS CI/CD path on Apple Silicon GitHub
+          Actions runners. Compiles via `xcrun -sdk macosx metal`.
+          Validates that the kernel survives Apple's GPU lowering.
+  SPIR-V — normal GPU execution on Windows / Linux via Vulkan, AND
+          runs on Mac CI through MoltenVK (Vulkan → Metal translation).
+          So Mac CI validates both Metal and Vulkan paths; Linux/Win
+          CI validates SPIR-V directly. Three independent lowerings ⇒
+          three sanity checks on the Lean spec's well-formedness.
+
 Neither `lake` nor `slangc` needs to be on PATH at build time — the
 outputs are in git. A future CI job (TODO) re-runs the pipeline and
 diffs against what's committed to catch drift.

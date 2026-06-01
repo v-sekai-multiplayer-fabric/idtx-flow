@@ -14,6 +14,15 @@
 // the input buffers, dispatches the single (1,1,1) thread group,
 // then reads `buf` back out.
 //
+// This is the CPU-target consumer specifically — it works headless
+// on any CI runner regardless of GPU availability. The sibling
+// godot_scn.metal and godot_scn.spv outputs aren't consumed here;
+// they exist to validate that the Lean spec lowers cleanly on macOS
+// (Metal) and via MoltenVK on Mac CI (SPIR-V) in addition to the
+// regular Windows / Linux Vulkan execution. Three targets, three
+// independent slangc lowerings ⇒ three sanity checks against the
+// same spec.
+//
 // Current state: `bake_scn_kernel` in the Lean spec is the keep-alive
 // entry (calls every writer once with zero arguments) that exists to
 // keep the writer library alive through slangc's dead-code elimination.
