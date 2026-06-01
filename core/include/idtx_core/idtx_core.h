@@ -466,6 +466,110 @@ IDTX_CORE_API int32_t idtx_core_export_avatar_to_vrm(
 IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_vrm(
     const char* path);
 
+// ---------------------------------------------------------------------
+// Godot .scn (binary PackedScene) export.
+//
+// Writes a Godot 4 .scn FORMAT_VERSION=6 binary resource directly,
+// without linking Godot. Two file variants:
+//   * RSRC (uncompressed) — plain binary, footer "RSRC"
+//   * RSCC (zstd block-compressed) — compression mode 2, block size
+//                                    4096, footer "RSCC"
+//
+// Format spec: PredictiveBVH/Codegen/GodotBinary.lean.
+// Slang-emitted writers: openusd-fabric/lean/Fabric/Serialization/
+//                        GodotScn.lean → godot_scn.slang.
+//
+// Strings have NO 4-byte padding (validated against Godot 4.7 output).
+//
+// Unknown classes are emitted as MissingNode/MissingResource per
+// godot-proposals#5945, so a server without the GDExtension still
+// loads the file without losing property data.
+// ---------------------------------------------------------------------
+
+typedef enum idtx_scn_compression
+{
+    IDTX_SCN_UNCOMPRESSED = 0,  // RSRC magic, no compression
+    IDTX_SCN_ZSTD         = 2,  // RSCC magic, zstd block compression
+} idtx_scn_compression_t;
+
+typedef struct idtx_scn_opts
+{
+    idtx_scn_compression_t compression;  // default IDTX_SCN_ZSTD
+    int32_t                block_size;   // zstd block size; default 4096
+    int32_t                generate_lods; // 0 = off, nonzero = run meshoptimizer
+    float                  lod_target_error; // simplification stop; default 1.0
+    int32_t                basis_universal; // 0 = leave textures uncompressed,
+                                            // nonzero = transcode to PortableCompressedTexture2D
+} idtx_scn_opts_t;
+
+// Convenience initializer for idtx_scn_opts_t with sensible defaults.
+// (Function rather than a static struct because C doesn't allow
+// non-const initializers of file-scope structs in headers cleanly.)
+IDTX_CORE_API void idtx_scn_opts_init(idtx_scn_opts_t* opts);
+
+// Returns 0 on success, non-zero on failure.
+//   1 = invalid argument
+//   2 = file open / write failed
+//   3 = compression failed
+//   4 = LOD generation failed
+//   5 = texture compression failed
+IDTX_CORE_API int32_t idtx_core_export_avatar_to_scn(
+    const idtx_avatar_t* avatar,
+    const char* path,
+    const idtx_scn_opts_t* opts);   // NULL = use defaults
+
+// Same as above but writes to a caller-owned buffer. Returns the
+// number of bytes written, or negative on error. Pass out_buf=NULL,
+// out_cap=0 to query the required size; the function returns the
+// negative of the required size in that case (so callers can do a
+// two-call pattern).
+IDTX_CORE_API int64_t idtx_core_export_avatar_to_scn_buffer(
+    const idtx_avatar_t* avatar,
+    uint8_t* out_buf,
+    size_t out_cap,
+    const idtx_scn_opts_t* opts);
+
+// ---------------------------------------------------------------------
+// Streaming progress callback.
+//
+// All long-running entrypoints (import_usd, import_vrm, export_*) may
+// invoke this callback zero or more times during their execution to
+// report progress. Hosts wire it to engine-specific UI (Godot's
+// EditorProgress, a CLI progress bar, etc.). The callback is OPTIONAL;
+// libidtx_core works fine without it set.
+//
+// fraction is in [0.0, 1.0]. message is a NUL-terminated UTF-8 string
+// owned by the library — do not free, do not retain past the call.
+// user is the opaque pointer passed to set_progress_cb.
+//
+// Thread safety: callbacks may fire from worker threads inside
+// libidtx_core. Hosts must marshal to their main thread if their UI
+// library requires it.
+// ---------------------------------------------------------------------
+
+typedef void (*idtx_progress_fn)(float fraction, const char* message, void* user);
+
+IDTX_CORE_API void idtx_core_set_progress_cb(idtx_progress_fn cb, void* user);
+
+// ---------------------------------------------------------------------
+// Library lifecycle.
+//
+// idtx_core_init() is idempotent and thread-safe. It performs one-time
+// setup: prepends the shipped v_sekai_schema plugin directory to
+// PXR_PLUGINPATH_NAME so the codeless API schema is discoverable in
+// every host before any UsdStage::Open() call. Hosts SHOULD call this
+// once at startup; calling it more than once is a no-op.
+//
+// `plugin_dir` overrides the default lookup (shared lib's neighbouring
+// `share/idtx_core/` directory). Pass NULL to use the default.
+//
+// Returns 0 on success. Non-zero indicates the schema directory was
+// not findable; the library still works, but `v_sekai:*` USD
+// attributes will be opaque rather than schema-validated.
+// ---------------------------------------------------------------------
+
+IDTX_CORE_API int32_t idtx_core_init(const char* plugin_dir);
+
 #ifdef __cplusplus
 }
 #endif
