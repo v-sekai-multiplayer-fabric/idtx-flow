@@ -1,40 +1,38 @@
 """
 SCons tool: godot_scn_writers
 
-Wires the LeanSlang → Slang → slangc → C++ pipeline for the Godot .scn
-binary writer functions used by `idtx_core_export_avatar_to_scn`.
+Wires the slangc-lowered Godot .scn writer outputs into libidtx_core.
 
-Pipeline (executed at SCons configure time, before libidtx_core compile):
+The Lean spec at openusd-fabric/lean/Fabric/Serialization/GodotScn.lean
+defines a `bake_scn_kernel` compute entry that calls every writer
+helper, so slangc keeps the whole library alive through dead-code
+elimination. The lowered targets are committed at:
 
-  1. `lake exe emit_artifacts`  in openusd-fabric/lean/
-        → writes shaders/godot_scn.slang  (LeanSlang AST → Slang source)
+  core/share/godot_scn/godot_scn.cpp   (host-callable C++, 779 lines)
+  core/share/godot_scn/godot_scn.metal (Metal kernel, 739 lines)
+  core/share/godot_scn/godot_scn.spv   (SPIR-V binary, ~8 KB)
+  core/share/godot_scn/godot_scn.spv.txt  (SPIR-V assembly, audit form)
 
-  2. `slangc shaders/godot_scn.slang -target cpp -o build/godot_scn.cpp`
-        → emits a C++ translation unit with the variant writer functions
-          declared in core/include/idtx_core/godot_scn.h.
+Neither `lake` nor `slangc` needs to be on PATH at build time — the
+outputs are in git. A future CI job (TODO) re-runs the pipeline and
+diffs against what's committed to catch drift.
 
-  3. SCons adds build/godot_scn.cpp to the libidtx_core source list so
-     the same .cpp compiles into both the shared lib and the static
-     archive — same byte-deterministic writer in all three deployment
-     targets.
+SCons wiring:
+- Adds core/share/godot_scn/godot_scn.cpp to the libidtx_core source
+  list so it compiles into both the shared lib and the static archive.
+- Defines IDTX_GODOT_SCN_AVAILABLE so idtx_export_scn.cpp delegates
+  to the slangc-emitted bake_scn_kernel.
+- Adds the slang prelude include dir (resolved via the `slangc`
+  binary's neighbouring `include/` directory) to CPPPATH so
+  `<slang-cpp-prelude.h>` resolves at compile time. If slangc is not
+  found, falls back to expecting the prelude on the system include
+  path — common when slang was installed via package manager.
 
-Prereqs (on PATH):
-  - `lake`   (Lean 4 build tool — for emit_artifacts)
-  - `slangc` (Slang compiler — for -target cpp)
-
-If either is missing, the build prints a clear message and proceeds
-without the .scn writer object. `idtx_core_export_avatar_to_scn` then
-returns code 99 (not yet implemented) at runtime, instead of breaking
-the whole build.
-
-Usage in SConstruct (after BuildIdtxCore call):
+Usage in SConstruct (after BuildGodotCPP, before BuildIdtxCore):
     env.GenerateGodotScnWriters()
 """
 import os
 import shutil
-import subprocess
-
-from SCons.Script import Exit
 
 
 def generate(env):
@@ -45,70 +43,45 @@ def exists(env):
     return True
 
 
-def _have(cmd):
-    return shutil.which(cmd) is not None
+def _slang_include_dir():
+    """Locate slang's `include/` directory (for slang-cpp-prelude.h).
 
-
-def _run(cmd, cwd=None, label=None):
-    print(f"  [godot_scn] {label or ' '.join(cmd)}")
-    res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"  [godot_scn] FAILED rc={res.returncode}")
-        if res.stdout:
-            print(res.stdout)
-        if res.stderr:
-            print(res.stderr)
-        return False
-    return True
+    The host-callable C++ output `#include`s `<slang-cpp-prelude.h>`
+    which lives next to the slangc binary as `../include/`. Return
+    None if slangc isn't on PATH; the build will then expect the
+    prelude to be on the system include path.
+    """
+    slangc = shutil.which("slangc")
+    if slangc is None:
+        return None
+    bindir = os.path.dirname(os.path.realpath(slangc))
+    candidate = os.path.normpath(os.path.join(bindir, "..", "include"))
+    if os.path.isfile(os.path.join(candidate, "slang-cpp-prelude.h")):
+        return candidate
+    return None
 
 
 def _generate_godot_scn_writers(env):
-    print("Generating godot_scn writers (LeanSlang → Slang → slangc → C++)...")
+    print("Checking godot_scn writers (committed slangc outputs)...")
 
-    lean_dir   = "openusd-fabric/lean"
-    slang_path = "openusd-fabric/lean/shaders/godot_scn.slang"
-    out_dir    = "build/godot_scn"
-    out_cpp    = os.path.join(out_dir, "godot_scn.cpp")
-    out_h      = os.path.join(out_dir, "godot_scn.h")
+    out_cpp = "core/share/godot_scn/godot_scn.cpp"
+    out_h   = "core/share/godot_scn"  # contains godot_scn.metal/.spv/.cpp
 
-    if not os.path.isdir(lean_dir):
-        print(f"  [godot_scn] openusd-fabric/lean not found at {lean_dir}; skipping")
+    if not os.path.isfile(out_cpp):
+        print(f"  [godot_scn] {out_cpp} not in git; .scn export returns 99")
         env['idtx_godot_scn_available'] = False
         return None
 
-    have_lake   = _have("lake")
-    have_slangc = _have("slangc")
-    if not have_lake or not have_slangc:
-        missing = []
-        if not have_lake:   missing.append("lake")
-        if not have_slangc: missing.append("slangc")
-        print(f"  [godot_scn] missing tool(s) on PATH: {', '.join(missing)}")
-        print(f"  [godot_scn] proceeding without .scn writer; export returns code 99")
-        env['idtx_godot_scn_available'] = False
-        return None
+    prelude_dir = _slang_include_dir()
+    if prelude_dir is None:
+        print(f"  [godot_scn] slang prelude not located; expect it on system include path")
+        prelude_dir = ""
+    else:
+        print(f"  [godot_scn] slang prelude: {prelude_dir}")
 
-    # 1) Run lake to emit shaders/godot_scn.slang.
-    if not _run(["lake", "exe", "emit_artifacts"], cwd=lean_dir, label="emit_artifacts"):
-        env['idtx_godot_scn_available'] = False
-        return None
-    if not os.path.isfile(slang_path):
-        print(f"  [godot_scn] expected {slang_path} after lake — not produced")
-        env['idtx_godot_scn_available'] = False
-        return None
-
-    # 2) Run slangc to lower to C++.
-    if not os.path.isdir(out_dir):
-        os.makedirs(out_dir)
-    ok = _run(
-        ["slangc", slang_path, "-target", "cpp", "-o", out_cpp],
-        label=f"slangc -target cpp → {out_cpp}",
-    )
-    if not ok or not os.path.isfile(out_cpp):
-        env['idtx_godot_scn_available'] = False
-        return None
-
-    env['idtx_godot_scn_available'] = True
-    env['idtx_godot_scn_cpp']       = out_cpp
-    env['idtx_godot_scn_include']   = out_dir
-    print(f"  [godot_scn] OK — {out_cpp}")
+    env['idtx_godot_scn_available']   = True
+    env['idtx_godot_scn_cpp']         = out_cpp
+    env['idtx_godot_scn_include']     = out_h
+    env['idtx_godot_scn_prelude_dir'] = prelude_dir
+    print(f"  [godot_scn] OK — using {out_cpp}")
     return out_cpp

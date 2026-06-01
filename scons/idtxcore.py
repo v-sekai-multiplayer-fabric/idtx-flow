@@ -59,9 +59,13 @@ def _common_env(env, *, building_dll, static):
         # itself is linked via the existing BuildIXWebSocket() artifact
         # produced upstream in SConstruct.
         "thirdparty/ixwebsocket",
-        # slangc-emitted godot_scn.h (only present if the LeanSlang
-        # pipeline ran successfully via GenerateGodotScnWriters).
-        env.get('idtx_godot_scn_include', 'build/godot_scn'),
+        # slangc-emitted .cpp lives in core/share/godot_scn/ (set by
+        # GenerateGodotScnWriters). If absent, fall back to that path
+        # anyway — harmless when no .cpp is on the source list.
+        env.get('idtx_godot_scn_include', 'core/share/godot_scn'),
+        # slang-cpp-prelude.h lives next to the slangc binary; the
+        # godot_scn writer .cpp includes it via <angle brackets>.
+        env.get('idtx_godot_scn_prelude_dir', ''),
     ])
 
     cfg_env.Append(LIBPATH=[
