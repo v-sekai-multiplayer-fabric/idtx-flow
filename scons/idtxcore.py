@@ -113,6 +113,7 @@ def _sources():
         "core/src/idtx_vrm_import.cpp",
         "core/src/idtx_vrm_springbone_parse.cpp",
         "core/src/vrm_humanoid_bones.cpp",
+        "core/src/idtx_chunker.cpp",
     ]
 
 
