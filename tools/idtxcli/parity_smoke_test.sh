@@ -8,7 +8,7 @@
 # byte-equality:
 #
 #   1. CLI                    — tools/idtxcli (idtxcli bake / fetch)
-#   2. Godot GDExtension      — addon/IDTXFlow/'s IdtxChunker class
+#   2. Godot GDExtension      — addon/IDTXFlow/'s IDTXFlowChunker class
 #                               (driven via `godot --headless --script`)
 #   3. Godot ENGINE module    — multiplayer-fabric-godot's existing
 #                               FabricMMOGAsset class after the
@@ -73,7 +73,7 @@ func _init() -> void:
     var args := OS.get_cmdline_user_args()
     var fixture := args[0]
     var aria := args[1]
-    var c := IdtxChunker.new()
+    var c := IDTXFlowChunker.new()
     if not c.open(aria):
         push_error("open failed")
         quit(2)

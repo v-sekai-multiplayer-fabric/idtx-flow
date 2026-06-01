@@ -1,10 +1,10 @@
 // Copyright 2026 The openusd-fabric authors / V-Sekai contributors.
 // SPDX-License-Identifier: Apache-2.0 OR MPL-2.0
 //
-// IdtxChunker — see header. Thin marshaling layer; algorithm lives in
+// IDTXFlowChunker — see header. Thin marshaling layer; algorithm lives in
 // libidtx_core.
 
-#include "IdtxChunker.h"
+#include "IDTXFlowChunker.h"
 
 #include <godot_cpp/core/class_db.hpp>
 
@@ -15,9 +15,9 @@
 
 using namespace godot;
 
-IdtxChunker::IdtxChunker() = default;
+IDTXFlowChunker::IDTXFlowChunker() = default;
 
-IdtxChunker::~IdtxChunker()
+IDTXFlowChunker::~IDTXFlowChunker()
 {
     if (transport_ != nullptr) {
         idtx_transport_destroy(transport_);
@@ -25,7 +25,7 @@ IdtxChunker::~IdtxChunker()
     }
 }
 
-bool IdtxChunker::open(const String& aria_base_url)
+bool IDTXFlowChunker::open(const String& aria_base_url)
 {
     if (transport_ != nullptr) {
         idtx_transport_destroy(transport_);
@@ -36,20 +36,20 @@ bool IdtxChunker::open(const String& aria_base_url)
     return transport_ != nullptr;
 }
 
-void IdtxChunker::set_auth(const String& bearer_token)
+void IDTXFlowChunker::set_auth(const String& bearer_token)
 {
     if (transport_ == nullptr) return;
     const CharString t = bearer_token.utf8();
     idtx_transport_set_auth(transport_, t.get_data());
 }
 
-bool IdtxChunker::set_insecure_tls(bool insecure)
+bool IDTXFlowChunker::set_insecure_tls(bool insecure)
 {
     if (transport_ == nullptr) return false;
     return idtx_transport_set_insecure_tls(transport_, insecure ? 1 : 0) != 0;
 }
 
-String IdtxChunker::bake(const String& index_name, const PackedByteArray& blob)
+String IDTXFlowChunker::bake(const String& index_name, const PackedByteArray& blob)
 {
     if (transport_ == nullptr) return String();
     const CharString name = index_name.utf8();
@@ -63,7 +63,7 @@ String IdtxChunker::bake(const String& index_name, const PackedByteArray& blob)
     return String(url);
 }
 
-PackedByteArray IdtxChunker::fetch(const String& caibx_url)
+PackedByteArray IDTXFlowChunker::fetch(const String& caibx_url)
 {
     if (transport_ == nullptr) return PackedByteArray();
 
@@ -92,7 +92,7 @@ PackedByteArray IdtxChunker::fetch(const String& caibx_url)
     return out;
 }
 
-bool IdtxChunker::verify(const String& caibx_url)
+bool IDTXFlowChunker::verify(const String& caibx_url)
 {
     if (transport_ == nullptr) return false;
 
@@ -118,7 +118,7 @@ bool IdtxChunker::verify(const String& caibx_url)
     return ok;
 }
 
-PackedByteArray IdtxChunker::sha512_256(const PackedByteArray& data)
+PackedByteArray IDTXFlowChunker::sha512_256(const PackedByteArray& data)
 {
     PackedByteArray out;
     out.resize(IDTX_CHUNKER_CHUNK_ID_BYTES);
@@ -126,7 +126,7 @@ PackedByteArray IdtxChunker::sha512_256(const PackedByteArray& data)
     return out;
 }
 
-String IdtxChunker::build_chunk_url(const String& store_url,
+String IDTXFlowChunker::build_chunk_url(const String& store_url,
                                     const PackedByteArray& chunk_id)
 {
     if (chunk_id.size() != IDTX_CHUNKER_CHUNK_ID_BYTES) return String();
@@ -136,27 +136,27 @@ String IdtxChunker::build_chunk_url(const String& store_url,
     return String(url);
 }
 
-int IdtxChunker::last_status() const
+int IDTXFlowChunker::last_status() const
 {
     return transport_ != nullptr ? idtx_transport_last_status(transport_) : 0;
 }
 
-String IdtxChunker::last_error() const
+String IDTXFlowChunker::last_error() const
 {
     return transport_ != nullptr ? String(idtx_transport_last_error(transport_)) : String();
 }
 
-void IdtxChunker::_bind_methods()
+void IDTXFlowChunker::_bind_methods()
 {
-    ClassDB::bind_method(D_METHOD("open",   "aria_base_url"),  &IdtxChunker::open);
-    ClassDB::bind_method(D_METHOD("set_auth", "bearer_token"), &IdtxChunker::set_auth);
-    ClassDB::bind_method(D_METHOD("set_insecure_tls", "insecure"), &IdtxChunker::set_insecure_tls);
-    ClassDB::bind_method(D_METHOD("bake",   "index_name", "blob"), &IdtxChunker::bake);
-    ClassDB::bind_method(D_METHOD("fetch",  "caibx_url"),     &IdtxChunker::fetch);
-    ClassDB::bind_method(D_METHOD("verify", "caibx_url"),     &IdtxChunker::verify);
-    ClassDB::bind_method(D_METHOD("sha512_256", "data"),      &IdtxChunker::sha512_256);
+    ClassDB::bind_method(D_METHOD("open",   "aria_base_url"),  &IDTXFlowChunker::open);
+    ClassDB::bind_method(D_METHOD("set_auth", "bearer_token"), &IDTXFlowChunker::set_auth);
+    ClassDB::bind_method(D_METHOD("set_insecure_tls", "insecure"), &IDTXFlowChunker::set_insecure_tls);
+    ClassDB::bind_method(D_METHOD("bake",   "index_name", "blob"), &IDTXFlowChunker::bake);
+    ClassDB::bind_method(D_METHOD("fetch",  "caibx_url"),     &IDTXFlowChunker::fetch);
+    ClassDB::bind_method(D_METHOD("verify", "caibx_url"),     &IDTXFlowChunker::verify);
+    ClassDB::bind_method(D_METHOD("sha512_256", "data"),      &IDTXFlowChunker::sha512_256);
     ClassDB::bind_method(D_METHOD("build_chunk_url", "store_url", "chunk_id"),
-                                  &IdtxChunker::build_chunk_url);
-    ClassDB::bind_method(D_METHOD("last_status"),             &IdtxChunker::last_status);
-    ClassDB::bind_method(D_METHOD("last_error"),              &IdtxChunker::last_error);
+                                  &IDTXFlowChunker::build_chunk_url);
+    ClassDB::bind_method(D_METHOD("last_status"),             &IDTXFlowChunker::last_status);
+    ClassDB::bind_method(D_METHOD("last_error"),              &IDTXFlowChunker::last_error);
 }

@@ -1,7 +1,7 @@
 // Copyright 2026 The openusd-fabric authors / V-Sekai contributors.
 // SPDX-License-Identifier: Apache-2.0 OR MPL-2.0
 //
-// IdtxChunker — GDScript-facing wrapper around libidtx_core's casync
+// IDTXFlowChunker — GDScript-facing wrapper around libidtx_core's casync
 // chunker + aria-storage transport. Provides parity with the standalone
 // CLI (`idtxcli bake / fetch / verify`) inside Godot, so the same
 // asset → CDN → asset roundtrip can be exercised either from the
@@ -20,12 +20,12 @@
 
 namespace godot {
 
-class IdtxChunker : public RefCounted {
-    GDCLASS(IdtxChunker, RefCounted);
+class IDTXFlowChunker : public RefCounted {
+    GDCLASS(IDTXFlowChunker, RefCounted);
 
 public:
-    IdtxChunker();
-    ~IdtxChunker() override;
+    IDTXFlowChunker();
+    ~IDTXFlowChunker() override;
 
     // Configure the aria-storage endpoint. Required before any
     // bake/fetch/verify call. Returns true on success.
