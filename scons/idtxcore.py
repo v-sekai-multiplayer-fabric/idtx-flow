@@ -70,6 +70,14 @@ def _common_env(env, *, building_dll, static):
         "usd_ms",
         "tbb12" if platform_name == "windows" else "tbb.12",
         "libidtx_usd",
+        # Reused system / transitive deps:
+        #   zstd       — for .cacnk compress/decompress (idtx_chunker.cpp).
+        #                OpenUSD pulls it in transitively but doesn't
+        #                re-export, so we link explicitly.
+        #   libcrypto  — for AES-128-GCM (idtx_aes.cpp). ixwebsocket
+        #                links OpenSSL already; libcrypto is its sibling.
+        "zstd",
+        "libcrypto" if platform_name == "windows" else "crypto",
     ])
 
     if platform.system() == "Windows" and (env["CXX"] == "cl" or env["CC"] == "cl"):
