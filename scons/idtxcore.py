@@ -120,6 +120,7 @@ def _sources():
         "core/src/idtx_chunker.cpp",
         "core/src/idtx_export_scn.cpp",
         "core/src/idtx_transport.cpp",
+        "core/src/idtx_aes.cpp",
     ]
 
 
