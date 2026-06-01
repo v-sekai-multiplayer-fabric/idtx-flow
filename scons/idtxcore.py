@@ -55,6 +55,10 @@ def _common_env(env, *, building_dll, static):
         f"{usd_extension_path}/include",
         "libs/cgltf",
         "libs/jsmn",
+        # ixwebsocket headers for idtx_transport.cpp. The library
+        # itself is linked via the existing BuildIXWebSocket() artifact
+        # produced upstream in SConstruct.
+        "thirdparty/ixwebsocket",
     ])
 
     cfg_env.Append(LIBPATH=[
@@ -115,6 +119,7 @@ def _sources():
         "core/src/vrm_humanoid_bones.cpp",
         "core/src/idtx_chunker.cpp",
         "core/src/idtx_export_scn.cpp",
+        "core/src/idtx_transport.cpp",
     ]
 
 
