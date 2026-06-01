@@ -161,14 +161,14 @@ def _build_idtx_core(env, shared=True, static=True):
 
     sources = list(_sources())
 
-    # The .scn writer functions are emitted by LeanSlang → Slang →
-    # slangc -target cpp (see scons/godot_scn_writers.py). If the
-    # pipeline ran successfully ahead of this call, append the emitted
-    # C++ to the canonical source list so both artifacts compile it.
-    # If skipped (tools missing), idtx_core_export_avatar_to_scn()
-    # returns code 99 (not yet implemented) at runtime.
+    # The .scn writer functions are emitted by slangc -target cpp from
+    # the committed openusd-fabric/lean/shaders/godot_scn.slang (see
+    # scons/godot_scn_writers.py). When available, link in both the
+    # slangc-emitted entry point AND the C++ glue that constructs the
+    # slang runtime buffers and bridges idtx_avatar → bake_scn_kernel.
     if env.get('idtx_godot_scn_available'):
         sources.append(env['idtx_godot_scn_cpp'])
+        sources.append("core/src/idtx_godot_scn_glue.cpp")
 
     targets = []
 
