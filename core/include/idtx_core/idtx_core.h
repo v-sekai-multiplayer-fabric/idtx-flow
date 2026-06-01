@@ -14,7 +14,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#ifdef _WIN32
+// Three build configurations:
+//   1. Building libidtx_core as a shared lib (SCons emits .dll/.so/.dylib).
+//      `IDTX_CORE_BUILDING_DLL` is defined; symbols get dllexport on
+//      Windows, default visibility elsewhere.
+//   2. Consuming libidtx_core as a shared lib (GDExtension, CLI).
+//      Neither define is set; symbols get dllimport on Windows.
+//   3. Statically linking libidtx_core into a host binary (Godot engine
+//      module that compiles us into the engine binary). Define
+//      `IDTX_CORE_STATIC` so symbols carry no import/export decoration
+//      at all — required on Windows because dllimport against a static
+//      lib yields LNK2019/LNK4217. Same source tree, three configs.
+#if defined(IDTX_CORE_STATIC)
+#  define IDTX_CORE_API
+#elif defined(_WIN32)
 #  ifdef IDTX_CORE_BUILDING_DLL
 #    define IDTX_CORE_API __declspec(dllexport)
 #  else
