@@ -19,6 +19,7 @@ env = Environment(
     	"openusd",
     	"openusdextension",
     	"ixwebsocket",
+    	"godot_scn_writers",
     	"idtxcore",
     	"idtxcli",
     	"idtxflow_ext",
@@ -66,6 +67,12 @@ env.BuildUsdExtension()
 env.DownloadMdlSdk()
 # download and build the Godot C++ bindings
 env = env.BuildGodotCPP()
+# Run LeanSlang → Slang → slangc to emit the Godot .scn binary writer
+# C++ source BEFORE BuildIdtxCore, so the emitted .cpp is on the source
+# list when libidtx_core compiles. Silently skips with a clear message
+# if `lake` or `slangc` are not on PATH — in that case
+# idtx_core_export_avatar_to_scn() returns code 99 at runtime.
+env.GenerateGodotScnWriters()
 # Build the engine-agnostic C ABI core (idtx_core) — both libidtxflow
 # (Godot) and the future Unity P/Invoke assembly link against this.
 env.BuildIdtxCore()

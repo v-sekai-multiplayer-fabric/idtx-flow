@@ -59,6 +59,9 @@ def _common_env(env, *, building_dll, static):
         # itself is linked via the existing BuildIXWebSocket() artifact
         # produced upstream in SConstruct.
         "thirdparty/ixwebsocket",
+        # slangc-emitted godot_scn.h (only present if the LeanSlang
+        # pipeline ran successfully via GenerateGodotScnWriters).
+        env.get('idtx_godot_scn_include', 'build/godot_scn'),
     ])
 
     cfg_env.Append(LIBPATH=[
@@ -101,6 +104,12 @@ def _common_env(env, *, building_dll, static):
         cfg_env.Append(CPPDEFINES=["IDTX_CORE_BUILDING_DLL"])
     if static:
         cfg_env.Append(CPPDEFINES=["IDTX_CORE_STATIC"])
+
+    # idtx_export_scn.cpp gates the slangc-emitted writer call behind
+    # IDTX_GODOT_SCN_AVAILABLE so the lib still builds when lake/slangc
+    # are not on PATH.
+    if env.get('idtx_godot_scn_available'):
+        cfg_env.Append(CPPDEFINES=["IDTX_GODOT_SCN_AVAILABLE"])
 
     return cfg_env
 
@@ -146,7 +155,17 @@ def _build_idtx_core(env, shared=True, static=True):
     shared_extension = "dll" if platform_name == "windows" else ("dylib" if platform_name == "macos" else "so")
     static_extension = "lib" if platform_name == "windows" else "a"
 
-    sources = _sources()
+    sources = list(_sources())
+
+    # The .scn writer functions are emitted by LeanSlang → Slang →
+    # slangc -target cpp (see scons/godot_scn_writers.py). If the
+    # pipeline ran successfully ahead of this call, append the emitted
+    # C++ to the canonical source list so both artifacts compile it.
+    # If skipped (tools missing), idtx_core_export_avatar_to_scn()
+    # returns code 99 (not yet implemented) at runtime.
+    if env.get('idtx_godot_scn_available'):
+        sources.append(env['idtx_godot_scn_cpp'])
+
     targets = []
 
     shared_lib = None
