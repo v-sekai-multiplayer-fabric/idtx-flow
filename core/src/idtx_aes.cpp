@@ -5,13 +5,13 @@
 // implementations. OpenSSL is already pulled in by ixwebsocket
 // (scons/ixwebsocket.py), so this adds zero new dependencies.
 //
-// STATUS: header surface + JSON parser landed; OpenSSL EVP encrypt/
-// decrypt remain stubbed pending SCons linkage of libcrypto. The
-// stubs return code 99 = not yet implemented. Once SCons wires up
-// the libcrypto link, the bodies are ~50 lines of EVP_EncryptInit_ex
-// / EVP_EncryptUpdate / EVP_EncryptFinal_ex + tag retrieval (and the
-// symmetric decrypt path). The JSON parser is real now so callers can
-// already plumb /auth/script_key responses into a key-store.
+// All entrypoints are real now:
+//   - idtx_aes_gcm_encrypt: EVP_aes_128_gcm() with explicit 12-byte
+//     IV. Output layout = ciphertext || 16-byte GCM tag.
+//   - idtx_aes_gcm_decrypt: tag verification via EVP_DecryptFinal_ex
+//     (returns 0 on mismatch — surfaces as code 3 = "tag mismatch").
+//   - idtx_aes_parse_script_key_json: small JSON extractor + RFC 4648
+//     base64 decoder.
 
 #include "idtx_core/idtx_aes.h"
 
@@ -40,29 +40,129 @@ idtx_buffer_t* make_buffer(const std::vector<uint8_t>& v) {
 } // namespace
 
 // ---------------------------------------------------------------------
-// AES-128-GCM — stubbed until SCons links libcrypto.
-// Hosts can still load the symbols today; calls return 99 so callers
-// fail gracefully instead of silently producing wrong ciphertext.
+// AES-128-GCM. Reuses OpenSSL libcrypto already pulled in by
+// ixwebsocket (LIBS entry in scons/idtxcore.py).
 // ---------------------------------------------------------------------
 
+#include <openssl/evp.h>
+
+namespace {
+
+// RAII guard for EVP_CIPHER_CTX so the early-return paths don't leak.
+struct EvpCtx {
+    EVP_CIPHER_CTX* ctx;
+    EvpCtx() : ctx(EVP_CIPHER_CTX_new()) {}
+    ~EvpCtx() { if (ctx != nullptr) EVP_CIPHER_CTX_free(ctx); }
+};
+
+} // namespace
+
 extern "C" IDTX_CORE_API int32_t idtx_aes_gcm_encrypt(
-    const uint8_t[IDTX_AES_KEY_BYTES],
-    const uint8_t[IDTX_AES_IV_BYTES],
-    const uint8_t*, size_t,
-    idtx_buffer_t** out)
+    const uint8_t   key[IDTX_AES_KEY_BYTES],
+    const uint8_t   iv[IDTX_AES_IV_BYTES],
+    const uint8_t*  plaintext,
+    size_t          pt_len,
+    idtx_buffer_t** out_ciphertext_with_tag)
 {
-    if (out != nullptr) *out = nullptr;
-    return 99;
+    if (out_ciphertext_with_tag == nullptr) return 1;
+    *out_ciphertext_with_tag = nullptr;
+    if (key == nullptr || iv == nullptr) return 1;
+    if (plaintext == nullptr && pt_len > 0) return 1;
+
+    EvpCtx ctx;
+    if (ctx.ctx == nullptr) return 2;
+
+    if (EVP_EncryptInit_ex(ctx.ctx, EVP_aes_128_gcm(), nullptr, nullptr, nullptr) != 1) {
+        return 2;
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx.ctx, EVP_CTRL_GCM_SET_IVLEN, IDTX_AES_IV_BYTES, nullptr) != 1) {
+        return 2;
+    }
+    if (EVP_EncryptInit_ex(ctx.ctx, nullptr, nullptr, key, iv) != 1) {
+        return 2;
+    }
+
+    std::vector<uint8_t> out(pt_len + IDTX_AES_TAG_BYTES);
+    int out_len = 0;
+    int total   = 0;
+    if (pt_len > 0) {
+        if (EVP_EncryptUpdate(ctx.ctx, out.data(), &out_len,
+                              plaintext, int(pt_len)) != 1) {
+            return 3;
+        }
+        total += out_len;
+    }
+    if (EVP_EncryptFinal_ex(ctx.ctx, out.data() + total, &out_len) != 1) {
+        return 3;
+    }
+    total += out_len;
+
+    if (EVP_CIPHER_CTX_ctrl(ctx.ctx, EVP_CTRL_GCM_GET_TAG,
+                            IDTX_AES_TAG_BYTES,
+                            out.data() + total) != 1) {
+        return 3;
+    }
+    out.resize(size_t(total) + IDTX_AES_TAG_BYTES);
+
+    *out_ciphertext_with_tag = make_buffer(out);
+    return 0;
 }
 
 extern "C" IDTX_CORE_API int32_t idtx_aes_gcm_decrypt(
-    const uint8_t[IDTX_AES_KEY_BYTES],
-    const uint8_t[IDTX_AES_IV_BYTES],
-    const uint8_t*, size_t,
-    idtx_buffer_t** out)
+    const uint8_t   key[IDTX_AES_KEY_BYTES],
+    const uint8_t   iv[IDTX_AES_IV_BYTES],
+    const uint8_t*  ciphertext_with_tag,
+    size_t          ct_len,
+    idtx_buffer_t** out_plaintext)
 {
-    if (out != nullptr) *out = nullptr;
-    return 99;
+    if (out_plaintext == nullptr) return 1;
+    *out_plaintext = nullptr;
+    if (key == nullptr || iv == nullptr || ciphertext_with_tag == nullptr) return 1;
+    if (ct_len < IDTX_AES_TAG_BYTES) return 1;
+
+    const size_t  body_len = ct_len - IDTX_AES_TAG_BYTES;
+    const uint8_t* body    = ciphertext_with_tag;
+    const uint8_t* tag     = ciphertext_with_tag + body_len;
+
+    EvpCtx ctx;
+    if (ctx.ctx == nullptr) return 2;
+
+    if (EVP_DecryptInit_ex(ctx.ctx, EVP_aes_128_gcm(), nullptr, nullptr, nullptr) != 1) {
+        return 2;
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx.ctx, EVP_CTRL_GCM_SET_IVLEN, IDTX_AES_IV_BYTES, nullptr) != 1) {
+        return 2;
+    }
+    if (EVP_DecryptInit_ex(ctx.ctx, nullptr, nullptr, key, iv) != 1) {
+        return 2;
+    }
+
+    std::vector<uint8_t> out(body_len);
+    int out_len = 0;
+    int total   = 0;
+    if (body_len > 0) {
+        if (EVP_DecryptUpdate(ctx.ctx, out.data(), &out_len,
+                              body, int(body_len)) != 1) {
+            return 2;
+        }
+        total += out_len;
+    }
+
+    // EVP_CTRL_GCM_SET_TAG must be set before Final; the Final call
+    // is what actually verifies the tag and returns 0 on mismatch.
+    if (EVP_CIPHER_CTX_ctrl(ctx.ctx, EVP_CTRL_GCM_SET_TAG,
+                            IDTX_AES_TAG_BYTES,
+                            const_cast<uint8_t*>(tag)) != 1) {
+        return 2;
+    }
+    if (EVP_DecryptFinal_ex(ctx.ctx, out.data() + total, &out_len) != 1) {
+        return 3;  // tag mismatch
+    }
+    total += out_len;
+    out.resize(size_t(total));
+
+    *out_plaintext = make_buffer(out);
+    return 0;
 }
 
 // ---------------------------------------------------------------------
