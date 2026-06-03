@@ -78,6 +78,22 @@ def _thirdparty_includes():
     return keep
 
 
+def _thirdparty_libdirs():
+    """Discover lib dirs holding zstd.lib / libcrypto.lib for the caibx
+    transport + AES link. Mirrors _thirdparty_includes — the vcpkg static
+    triplet builds both. Filtered to dirs that actually hold one of them.
+    """
+    dirs = glob.glob("thirdparty/vcpkg/installed/*/lib")
+    keep = []
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        if os.path.isfile(os.path.join(d, "zstd.lib")) or \
+           os.path.isfile(os.path.join(d, "libcrypto.lib")):
+            keep.append(d)
+    return keep
+
+
 def _common_env(env, *, building_dll, static):
     """Configure a build env for one of the two artifacts.
 
@@ -120,6 +136,15 @@ def _common_env(env, *, building_dll, static):
         f"{usd_root}/lib",
         f"{usd_extension_path}/libs/{platform_name}",
     ])
+    # Transport + AES link (when not compiled out): the IXWebSocket static
+    # lib (HTTP/TLS for idtx_transport) plus zstd/openssl from the vcpkg
+    # static triplet. LIBPATHs discovered so the link resolves without a
+    # hand-set LIB env var.
+    if ARGUMENTS.get('idtx_skip_transport', '0') == '0':
+        ixws_dir = (f"thirdparty/ixwebsocket/build_{platform_name}_{build_target}/Release"
+                    if platform_name == "windows"
+                    else f"thirdparty/ixwebsocket/build_{platform_name}_{build_target}")
+        cfg_env.Append(LIBPATH=[ixws_dir] + _thirdparty_libdirs())
 
     cfg_env.Append(LIBS=[
         "usd_ms",
@@ -133,10 +158,18 @@ def _common_env(env, *, building_dll, static):
     #               pulls it transitively but doesn't re-export it.
     #   libcrypto — AES-128-GCM (idtx_aes.cpp); ixwebsocket's OpenSSL sibling.
     if ARGUMENTS.get('idtx_skip_transport', '0') == '0':
-        cfg_env.Append(LIBS=[
-            "zstd",
-            "libcrypto" if platform_name == "windows" else "crypto",
-        ])
+        if platform_name == "windows":
+            cfg_env.Append(LIBS=[
+                "ixwebsocket", "zstd", "libssl", "libcrypto",
+                # Win32 deps: OpenSSL needs advapi32 (RegisterEventSource),
+                # crypt32 (cert store), user32; IXWebSocket needs ws2_32
+                # (sockets); openssl's RAND/BIO pull in bcrypt.
+                "ws2_32", "crypt32", "advapi32", "user32", "bcrypt",
+            ])
+        else:
+            cfg_env.Append(LIBS=[
+                "ixwebsocket", "ssl", "crypto", "zstd", "z", "pthread", "dl",
+            ])
 
     if platform.system() == "Windows" and (env["CXX"] == "cl" or env["CC"] == "cl"):
         cfg_env.Append(CXXFLAGS=['/EHsc', '/GR', '/FS', '/std:c++20'])
