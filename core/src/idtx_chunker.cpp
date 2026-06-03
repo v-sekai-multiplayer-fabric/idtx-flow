@@ -626,7 +626,11 @@ extern "C" IDTX_CORE_API int32_t idtx_chunker_decompress_and_verify(
     }
     if (fcs > (256ULL * 1024ULL * 16ULL)) return 2;  // sanity
 
-    std::vector<uint8_t> plain(size_t(fcs));
+    // static_cast (not size_t(fcs)): `std::vector<uint8_t> plain(size_t(fcs))`
+    // is the most vexing parse — size_t(fcs) reads as a parameter
+    // declaration, making `plain` a FUNCTION returning vector<uint8_t>
+    // rather than a sized vector. static_cast forces an expression.
+    std::vector<uint8_t> plain(static_cast<size_t>(fcs));
     const size_t written = ZSTD_decompress(
         plain.data(), plain.size(),
         cacnk_zstd,   cacnk_len);
