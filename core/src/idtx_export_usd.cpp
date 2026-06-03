@@ -19,9 +19,11 @@
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/sdf/reference.h>
 #include <pxr/usd/sdf/schema.h>
 #include <pxr/usd/sdf/valueTypeName.h>
 #include <pxr/usd/usd/editTarget.h>
+#include <pxr/usd/usd/references.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
@@ -706,20 +708,39 @@ static void author_avatar_tree(
     }
 }
 
-// Delta-minimise `delta` against `base` (the composed source): erase any
-// attribute default whose value already matches base, and flip surviving
-// prim specifiers from `def` to `over` where the prim also exists in base
-// (so they read as overrides of source content, not fresh definitions).
+// True if the prim spec carries a composition arc we must preserve
+// (a reference / payload) — LAYER_ONLY pulls the source in this way, so
+// such a prim is never flipped to `over` or pruned.
+static bool has_composition_arc(pxr::SdfPrimSpecHandle const& spec)
+{
+    return !spec->GetReferenceList().GetAddedOrExplicitItems().empty()
+        || !spec->GetPayloadList().GetAddedOrExplicitItems().empty();
+}
+
+// Delta-minimise `delta` against `base` (the composed source): for every
+// property, erase each value-bearing field (attribute default, attribute
+// connection targets, relationship targets) whose value already matches
+// base, and remove the property spec once it carries none of them. Then
+// flip surviving prim specifiers from `def` to `over` where the prim also
+// exists in base, and prune overs that ended up empty.
 //
 // Net effect: an avatar imported from `base` and re-exported unchanged
-// authors NO redundant attribute values — the delta carries only what the
-// caller actually changed. (We don't bother pruning now-empty over specs:
-// an attribute-less `over` is inert, valid, and usdchecker-clean.)
+// authors NO redundant opinion — not the geometry, not the material
+// binding — so the delta carries only what the caller actually changed.
 static void minimize_overlay(
     pxr::SdfLayerRefPtr const& delta,
     pxr::SdfLayerRefPtr const& base)
 {
     if (!delta || !base) return;
+
+    // The fields that carry a property's "value". Attributes use Default
+    // (+ ConnectionPaths for shader wiring); relationships use TargetPaths
+    // (e.g. material:binding). Our exporter authors no time samples.
+    static const pxr::TfToken value_fields[] = {
+        pxr::SdfFieldKeys->Default,
+        pxr::SdfFieldKeys->ConnectionPaths,
+        pxr::SdfFieldKeys->TargetPaths,
+    };
 
     std::vector<pxr::SdfPath> props;
     std::vector<pxr::SdfPath> prims;
@@ -732,28 +753,34 @@ static void minimize_overlay(
             }
         });
 
-    // 1. Drop attribute defaults equal to the composed source value, then
-    //    remove the attribute declaration entirely if it's left valueless
-    //    (our exporter only authors defaults, so a default-less attr spec
-    //    is inert noise).
+    // 1. Subtract value-bearing fields equal to the composed source, then
+    //    remove the property spec once it carries no value at all.
     for (pxr::SdfPath const& p : props) {
-        pxr::VtValue dv, bv;
-        if (delta->HasField(p, pxr::SdfFieldKeys->Default, &dv) &&
-            base->HasField(p, pxr::SdfFieldKeys->Default, &bv) &&
-            dv == bv) {
-            delta->EraseField(p, pxr::SdfFieldKeys->Default);
+        for (pxr::TfToken const& f : value_fields) {
+            pxr::VtValue dv, bv;
+            if (delta->HasField(p, f, &dv) &&
+                base->HasField(p, f, &bv) &&
+                dv == bv) {
+                delta->EraseField(p, f);
+            }
         }
-        pxr::SdfAttributeSpecHandle attr = delta->GetAttributeAtPath(p);
-        if (attr && !attr->HasDefaultValue()) {
-            if (pxr::SdfPrimSpecHandle owner = delta->GetPrimAtPath(p.GetPrimPath())) {
-                owner->RemoveProperty(attr);
+        bool valueless = true;
+        for (pxr::TfToken const& f : value_fields) {
+            if (delta->HasField(p, f)) { valueless = false; break; }
+        }
+        if (valueless) {
+            if (pxr::SdfPropertySpecHandle prop = delta->GetPropertyAtPath(p)) {
+                if (pxr::SdfPrimSpecHandle owner = delta->GetPrimAtPath(p.GetPrimPath())) {
+                    owner->RemoveProperty(prop);
+                }
             }
         }
     }
 
     // 2. Deepest-first so children are pruned before parents: flip
-    //    def -> over for prims the source already defines, then drop overs
-    //    that ended up carrying nothing (no properties, no children).
+    //    def -> over for prims the source already defines (leaving prims
+    //    that carry a reference/payload arc as authored), then drop overs
+    //    that ended up carrying nothing.
     std::sort(prims.begin(), prims.end(),
         [](pxr::SdfPath const& a, pxr::SdfPath const& b) {
             return a.GetPathElementCount() > b.GetPathElementCount();
@@ -761,10 +788,12 @@ static void minimize_overlay(
     for (pxr::SdfPath const& p : prims) {
         pxr::SdfPrimSpecHandle spec = delta->GetPrimAtPath(p);
         if (!spec) continue;
-        if (base->GetPrimAtPath(p)) {
+        bool arc = has_composition_arc(spec);
+        if (base->GetPrimAtPath(p) && !arc) {
             spec->SetSpecifier(pxr::SdfSpecifierOver);
         }
-        bool inert = spec->GetProperties().empty()
+        bool inert = !arc
+                  && spec->GetProperties().empty()
                   && spec->GetNameChildren().empty()
                   && spec->GetSpecifier() == pxr::SdfSpecifierOver;
         if (inert) {
@@ -841,30 +870,38 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd_ex(
     }
 
     // ---- OVERLAY / LAYER_ONLY: a delta layer over the source. ----------
-    // `path` becomes a new layer whose strongest opinions are the
-    // avatar's; the source is pulled in as a weaker sublayer so its
-    // references, payloads, and any prims the avatar doesn't touch all
-    // survive. Only the delta layer is written.
+    // `path` is a new layer holding only the avatar's deltas; the source
+    // is pulled in so its references, payloads, and untouched prims all
+    // survive. The two modes differ ONLY in the composition arc used:
     //
-    // The full avatar is authored, then minimize_overlay() subtracts every
-    // opinion the composed source already provides and flips def->over, so
-    // the delta carries only what actually changed — an unchanged
-    // import->export round-trip yields an attribute-empty delta.
+    //   OVERLAY    — source attached as a weaker SUBLAYER of the delta.
+    //                A patch on top of the source's layer stack.
+    //   LAYER_ONLY — source pulled by a composition REFERENCE arc on the
+    //                avatar root. The delta is a standalone stage that
+    //                incorporates the source asset, not a layer patch.
+    //
+    // In both cases the full avatar is authored, then minimize_overlay()
+    // subtracts every opinion the composed source already provides (values,
+    // material bindings, shader connections) and flips def->over, so an
+    // unchanged import->export round-trip yields an empty delta.
     pxr::SdfLayerRefPtr over = pxr::SdfLayer::CreateNew(std::string(path));
     if (!over) return 2;
-    over->GetSubLayerPaths().push_back(source);
+
+    if (mode == IDTX_USD_OVERLAY) {
+        over->GetSubLayerPaths().push_back(source);
+    }
 
     pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(over);
     if (!stage) return 2;
 
-    // edit_target_id routes the avatar's opinions to a specific layer in
-    // the composed stack (named by identifier) instead of the new delta
-    // layer. Default = the delta layer `over`. When the caller routes into
-    // an existing source layer we do NOT minimise (the source would be its
-    // own base, erasing everything) and we save that layer directly.
+    // edit_target_id (OVERLAY only) routes opinions to a named layer in the
+    // composed stack instead of the delta layer. Routing into an existing
+    // source layer means we do NOT minimise (the source would be its own
+    // base) and we save that layer directly.
     pxr::SdfLayerRefPtr authored = over;
     bool minimise = true;
-    if (o.edit_target_id != nullptr && o.edit_target_id[0] != '\0') {
+    if (mode == IDTX_USD_OVERLAY &&
+        o.edit_target_id != nullptr && o.edit_target_id[0] != '\0') {
         pxr::SdfLayerRefPtr target = pxr::SdfLayer::Find(o.edit_target_id);
         if (!target) return 5;
         stage->SetEditTarget(pxr::UsdEditTarget(target));
@@ -875,6 +912,15 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd_ex(
     }
 
     idtx::core::detail::author_avatar_tree(stage, avatar);
+
+    // LAYER_ONLY: pull the source in by a reference arc on the avatar root
+    // (its default prim). The source's default prim composes underneath, so
+    // the avatar's own def's become redundant and minimise away.
+    if (mode == IDTX_USD_LAYER_ONLY) {
+        if (pxr::UsdPrim root = stage->GetDefaultPrim()) {
+            root.GetReferences().AddReference(source);
+        }
+    }
 
     if (minimise) {
         // Base = the source composed on its own (without the avatar's

@@ -483,18 +483,18 @@ IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
 //                       the source. References/payloads in the source are
 //                       preserved; only deltas are written to `path`.
 //   IDTX_USD_LAYER_ONLY Write ONLY the delta layer to `path`; the source
-//                       is pulled in by a layer arc, so the consumer
-//                       composes the two files. The thinnest artifact.
+//                       is pulled in by a composition REFERENCE arc on the
+//                       avatar root (not a sublayer), so the delta is a
+//                       standalone stage that incorporates the source
+//                       asset. The thinnest artifact.
 //
-// Both OVERLAY and LAYER_ONLY are delta-minimised: the full avatar is
-// authored, then every attribute opinion equal to the composed source is
-// erased and the surviving prims flip from `def` to `over`, so an
-// unchanged import->export round-trip yields a delta with no prim
-// opinions at all (just the layer arc). They currently share one
-// artifact (source attached as a sublayer); the only remaining
-// distinction — LAYER_ONLY pulling the source by a composition
-// *reference* arc rather than a sublayer, and relationship/connection
-// (not just attribute) delta-minimisation — is tracked as follow-up.
+// OVERLAY and LAYER_ONLY differ only in that arc — OVERLAY sublayers the
+// source, LAYER_ONLY references it. Both are delta-minimised: the full
+// avatar is authored, then every opinion equal to the composed source —
+// attribute values, attribute connections, AND relationship targets
+// (e.g. material:binding) — is erased and the surviving prims flip from
+// `def` to `over`, so an unchanged import->export round-trip yields a
+// delta with no prim opinions at all (just the arc to the source).
 //   IDTX_USD_FLATTEN    Compose `source_path` + the avatar's deltas, then
 //                       flatten the whole layer stack into a single
 //                       standalone stage at `path`. References/payloads

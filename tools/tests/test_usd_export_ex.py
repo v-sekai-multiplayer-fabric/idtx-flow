@@ -237,10 +237,15 @@ def test_ex_modes_roundtrip(core, source_stage, tmp_path, mode, name):
     core.idtx_avatar_destroy(back)
     assert n >= 1, f"{name}: mesh lost through round-trip (got {n})"
 
-    # Delta artifacts must reference the source rather than embed it.
-    if mode in (OVERLAY, LAYER_ONLY):
+    # Delta artifacts pull the source in by an arc — OVERLAY via a
+    # sublayer, LAYER_ONLY via a composition reference.
+    if mode == OVERLAY:
         text = out.read_text(errors="replace")
-        assert "subLayers" in text, f"{name}: expected a subLayers arc to source"
+        assert "subLayers" in text, "overlay: expected a subLayers arc to source"
+    elif mode == LAYER_ONLY:
+        text = out.read_text(errors="replace")
+        assert "references" in text, "layer_only: expected a reference arc to source"
+        assert "subLayers" not in text, "layer_only: should not use a sublayer"
 
     ran, ok = _usdchecker(out)
     assert ok, f"usdchecker failed on {name} output"
@@ -262,14 +267,43 @@ def test_overlay_unchanged_is_minimal(core, source_stage, tmp_path):
     core.idtx_avatar_destroy(av)
     assert rc == 0
     text = out.read_text(errors="replace")
-    # Unchanged values must have been subtracted against the source.
+    # Unchanged opinions must have been subtracted against the source —
+    # geometry, material values, AND the material:binding relationship.
     assert "point3f[] points" not in text, "mesh points redundantly re-authored"
     assert "diffuseColor" not in text, "material redundantly re-authored"
-    # Expressed as overrides of existing source prims, and source still pulled in.
-    assert "over " in text, "expected def->over flip on existing prims"
+    assert "material:binding" not in text, "relationship redundantly re-authored"
     assert "subLayers" in text
     ran, ok = _usdchecker(out)
     assert ok, "usdchecker failed on minimal overlay"
+
+
+def test_layer_only_uses_reference_arc(core, source_stage, tmp_path):
+    """LAYER_ONLY pulls the source in by a composition reference (not a
+    sublayer), and the composed result still yields the avatar."""
+    out = tmp_path / "layer_only_ref.usda"
+    av = core.idtx_core_import_avatar_from_usd(str(source_stage).encode())
+    assert av
+    opts = IdtxUsdExportOpts()
+    core.idtx_usd_export_opts_init(ctypes.byref(opts))
+    opts.mode = LAYER_ONLY
+    src = str(source_stage).encode()
+    opts.source_path = src
+    rc = core.idtx_core_export_avatar_to_usd_ex(av, str(out).encode(),
+                                                ctypes.byref(opts))
+    core.idtx_avatar_destroy(av)
+    assert rc == 0
+    text = out.read_text(errors="replace")
+    assert "references" in text, "layer_only: expected a reference arc"
+    assert "subLayers" not in text, "layer_only: should not use a sublayer"
+    assert "point3f[] points" not in text, "geometry redundantly authored"
+    # Composed via the reference, the avatar still imports back.
+    back = core.idtx_core_import_avatar_from_usd(str(out).encode())
+    assert back, "re-import of layer_only output returned NULL"
+    n = core.idtx_avatar_get_mesh_count(back)
+    core.idtx_avatar_destroy(back)
+    assert n >= 1, f"layer_only: mesh lost through reference (got {n})"
+    ran, ok = _usdchecker(out)
+    assert ok, "usdchecker failed on layer_only reference output"
 
 
 def test_overlay_changed_value_appears_in_delta(core, source_stage, tmp_path):
