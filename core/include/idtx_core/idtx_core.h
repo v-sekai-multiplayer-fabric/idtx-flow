@@ -485,12 +485,16 @@ IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
 //   IDTX_USD_LAYER_ONLY Write ONLY the delta layer to `path`; the source
 //                       is pulled in by a layer arc, so the consumer
 //                       composes the two files. The thinnest artifact.
-//                       NOTE: currently shares OVERLAY's implementation
-//                       (source attached as a sublayer, full avatar
-//                       authored onto the delta). The planned refinement
-//                       — source pulled by a composition *reference* arc
-//                       with only changed attributes authored as overs —
-//                       is tracked as follow-up.
+//
+// Both OVERLAY and LAYER_ONLY are delta-minimised: the full avatar is
+// authored, then every attribute opinion equal to the composed source is
+// erased and the surviving prims flip from `def` to `over`, so an
+// unchanged import->export round-trip yields a delta with no prim
+// opinions at all (just the layer arc). They currently share one
+// artifact (source attached as a sublayer); the only remaining
+// distinction — LAYER_ONLY pulling the source by a composition
+// *reference* arc rather than a sublayer, and relationship/connection
+// (not just attribute) delta-minimisation — is tracked as follow-up.
 //   IDTX_USD_FLATTEN    Compose `source_path` + the avatar's deltas, then
 //                       flatten the whole layer stack into a single
 //                       standalone stage at `path`. References/payloads

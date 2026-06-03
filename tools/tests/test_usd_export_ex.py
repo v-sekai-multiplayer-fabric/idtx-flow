@@ -74,6 +74,7 @@ def core():
     lib.idtx_avatar_get_mesh_count.restype = c_int32
     lib.idtx_avatar_get_source_usd_path.argtypes = [c_void_p]
     lib.idtx_avatar_get_source_usd_path.restype = c_char_p
+    lib.idtx_avatar_set_root_transform.argtypes = [c_void_p, POINTER(c_float)]
 
     lib.idtx_skeleton_create.restype = c_void_p
     lib.idtx_skeleton_add_bone.argtypes = [
@@ -243,3 +244,55 @@ def test_ex_modes_roundtrip(core, source_stage, tmp_path, mode, name):
 
     ran, ok = _usdchecker(out)
     assert ok, f"usdchecker failed on {name} output"
+
+
+def test_overlay_unchanged_is_minimal(core, source_stage, tmp_path):
+    """An avatar imported from the source and re-exported UNCHANGED must
+    author no redundant attribute values — the delta carries only deltas."""
+    out = tmp_path / "overlay_min.usda"
+    av = core.idtx_core_import_avatar_from_usd(str(source_stage).encode())
+    assert av
+    opts = IdtxUsdExportOpts()
+    core.idtx_usd_export_opts_init(ctypes.byref(opts))
+    opts.mode = OVERLAY
+    src = str(source_stage).encode()
+    opts.source_path = src
+    rc = core.idtx_core_export_avatar_to_usd_ex(av, str(out).encode(),
+                                                ctypes.byref(opts))
+    core.idtx_avatar_destroy(av)
+    assert rc == 0
+    text = out.read_text(errors="replace")
+    # Unchanged values must have been subtracted against the source.
+    assert "point3f[] points" not in text, "mesh points redundantly re-authored"
+    assert "diffuseColor" not in text, "material redundantly re-authored"
+    # Expressed as overrides of existing source prims, and source still pulled in.
+    assert "over " in text, "expected def->over flip on existing prims"
+    assert "subLayers" in text
+    ran, ok = _usdchecker(out)
+    assert ok, "usdchecker failed on minimal overlay"
+
+
+def test_overlay_changed_value_appears_in_delta(core, source_stage, tmp_path):
+    """A changed attribute (root transform) lands in the delta; unchanged
+    geometry/material still do not."""
+    out = tmp_path / "overlay_changed.usda"
+    av = core.idtx_core_import_avatar_from_usd(str(source_stage).encode())
+    assert av
+    # Translate the root by (5, 0, 0) — row-major, translation in last row.
+    m = [1.0, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  5.0, 0, 0, 1]
+    core.idtx_avatar_set_root_transform(av, (c_float * 16)(*m))
+    opts = IdtxUsdExportOpts()
+    core.idtx_usd_export_opts_init(ctypes.byref(opts))
+    opts.mode = OVERLAY
+    src = str(source_stage).encode()
+    opts.source_path = src
+    rc = core.idtx_core_export_avatar_to_usd_ex(av, str(out).encode(),
+                                                ctypes.byref(opts))
+    core.idtx_avatar_destroy(av)
+    assert rc == 0
+    text = out.read_text(errors="replace")
+    assert "xformOp:transform" in text, "changed root transform missing from delta"
+    assert "5" in text, "changed translation value missing from delta"
+    assert "point3f[] points" not in text, "unchanged mesh redundantly authored"
+    ran, ok = _usdchecker(out)
+    assert ok, "usdchecker failed on changed overlay"

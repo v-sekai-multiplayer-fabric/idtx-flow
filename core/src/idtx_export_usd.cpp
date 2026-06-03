@@ -14,8 +14,12 @@
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
+#include <pxr/base/vt/value.h>
+#include <pxr/usd/sdf/attributeSpec.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/sdf/schema.h>
 #include <pxr/usd/sdf/valueTypeName.h>
 #include <pxr/usd/usd/editTarget.h>
 #include <pxr/usd/usd/stage.h>
@@ -702,6 +706,78 @@ static void author_avatar_tree(
     }
 }
 
+// Delta-minimise `delta` against `base` (the composed source): erase any
+// attribute default whose value already matches base, and flip surviving
+// prim specifiers from `def` to `over` where the prim also exists in base
+// (so they read as overrides of source content, not fresh definitions).
+//
+// Net effect: an avatar imported from `base` and re-exported unchanged
+// authors NO redundant attribute values — the delta carries only what the
+// caller actually changed. (We don't bother pruning now-empty over specs:
+// an attribute-less `over` is inert, valid, and usdchecker-clean.)
+static void minimize_overlay(
+    pxr::SdfLayerRefPtr const& delta,
+    pxr::SdfLayerRefPtr const& base)
+{
+    if (!delta || !base) return;
+
+    std::vector<pxr::SdfPath> props;
+    std::vector<pxr::SdfPath> prims;
+    delta->Traverse(pxr::SdfPath::AbsoluteRootPath(),
+        [&](pxr::SdfPath const& p) {
+            if (p.IsPrimPropertyPath()) {
+                props.push_back(p);
+            } else if (p.IsPrimPath() && p != pxr::SdfPath::AbsoluteRootPath()) {
+                prims.push_back(p);
+            }
+        });
+
+    // 1. Drop attribute defaults equal to the composed source value, then
+    //    remove the attribute declaration entirely if it's left valueless
+    //    (our exporter only authors defaults, so a default-less attr spec
+    //    is inert noise).
+    for (pxr::SdfPath const& p : props) {
+        pxr::VtValue dv, bv;
+        if (delta->HasField(p, pxr::SdfFieldKeys->Default, &dv) &&
+            base->HasField(p, pxr::SdfFieldKeys->Default, &bv) &&
+            dv == bv) {
+            delta->EraseField(p, pxr::SdfFieldKeys->Default);
+        }
+        pxr::SdfAttributeSpecHandle attr = delta->GetAttributeAtPath(p);
+        if (attr && !attr->HasDefaultValue()) {
+            if (pxr::SdfPrimSpecHandle owner = delta->GetPrimAtPath(p.GetPrimPath())) {
+                owner->RemoveProperty(attr);
+            }
+        }
+    }
+
+    // 2. Deepest-first so children are pruned before parents: flip
+    //    def -> over for prims the source already defines, then drop overs
+    //    that ended up carrying nothing (no properties, no children).
+    std::sort(prims.begin(), prims.end(),
+        [](pxr::SdfPath const& a, pxr::SdfPath const& b) {
+            return a.GetPathElementCount() > b.GetPathElementCount();
+        });
+    for (pxr::SdfPath const& p : prims) {
+        pxr::SdfPrimSpecHandle spec = delta->GetPrimAtPath(p);
+        if (!spec) continue;
+        if (base->GetPrimAtPath(p)) {
+            spec->SetSpecifier(pxr::SdfSpecifierOver);
+        }
+        bool inert = spec->GetProperties().empty()
+                  && spec->GetNameChildren().empty()
+                  && spec->GetSpecifier() == pxr::SdfSpecifierOver;
+        if (inert) {
+            pxr::SdfPath parent = p.GetParentPath();
+            if (parent == pxr::SdfPath::AbsoluteRootPath()) {
+                delta->RemoveRootPrim(spec);
+            } else if (pxr::SdfPrimSpecHandle pp = delta->GetPrimAtPath(parent)) {
+                pp->RemoveNameChild(spec);
+            }
+        }
+    }
+}
+
 }  // namespace idtx::core::detail
 
 extern "C" IDTX_CORE_API void idtx_usd_export_opts_init(idtx_usd_export_opts_t* opts)
@@ -770,11 +846,10 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd_ex(
     // references, payloads, and any prims the avatar doesn't touch all
     // survive. Only the delta layer is written.
     //
-    // OVERLAY and LAYER_ONLY currently share this sublayer artifact. The
-    // planned LAYER_ONLY refinement — source pulled by a composition
-    // reference arc rather than a sublayer, with only changed attributes
-    // authored as `over`s (true delta minimisation) — is tracked as
-    // follow-up; today both modes emit the full avatar onto the delta.
+    // The full avatar is authored, then minimize_overlay() subtracts every
+    // opinion the composed source already provides and flips def->over, so
+    // the delta carries only what actually changed — an unchanged
+    // import->export round-trip yields an attribute-empty delta.
     pxr::SdfLayerRefPtr over = pxr::SdfLayer::CreateNew(std::string(path));
     if (!over) return 2;
     over->GetSubLayerPaths().push_back(source);
@@ -782,19 +857,34 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd_ex(
     pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(over);
     if (!stage) return 2;
 
-    // Route authoring to a named sublayer when requested, else the new
-    // delta layer (the stage's strongest, default edit target).
+    // edit_target_id routes the avatar's opinions to a specific layer in
+    // the composed stack (named by identifier) instead of the new delta
+    // layer. Default = the delta layer `over`. When the caller routes into
+    // an existing source layer we do NOT minimise (the source would be its
+    // own base, erasing everything) and we save that layer directly.
+    pxr::SdfLayerRefPtr authored = over;
+    bool minimise = true;
     if (o.edit_target_id != nullptr && o.edit_target_id[0] != '\0') {
         pxr::SdfLayerRefPtr target = pxr::SdfLayer::Find(o.edit_target_id);
         if (!target) return 5;
         stage->SetEditTarget(pxr::UsdEditTarget(target));
+        authored = target;
+        minimise = (target == over);
     } else {
         stage->SetEditTarget(pxr::UsdEditTarget(over));
     }
 
     idtx::core::detail::author_avatar_tree(stage, avatar);
 
-    if (!over->Save()) return 3;
+    if (minimise) {
+        // Base = the source composed on its own (without the avatar's
+        // edits), so equal opinions in `over` can be subtracted.
+        if (pxr::UsdStageRefPtr base_stage = pxr::UsdStage::Open(source)) {
+            idtx::core::detail::minimize_overlay(over, base_stage->Flatten());
+        }
+    }
+
+    if (!authored->Save()) return 3;
     return 0;
 }
 
