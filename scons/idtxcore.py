@@ -28,8 +28,6 @@ import os
 import platform
 import shutil
 
-from SCons.Script import ARGUMENTS
-
 
 def generate(env):
     env.AddMethod(_build_idtx_core, 'BuildIdtxCore')
@@ -136,40 +134,35 @@ def _common_env(env, *, building_dll, static):
         f"{usd_root}/lib",
         f"{usd_extension_path}/libs/{platform_name}",
     ])
-    # Transport + AES link (when not compiled out): the IXWebSocket static
-    # lib (HTTP/TLS for idtx_transport) plus zstd/openssl from the vcpkg
-    # static triplet. LIBPATHs discovered so the link resolves without a
-    # hand-set LIB env var.
-    if ARGUMENTS.get('idtx_skip_transport', '0') == '0':
-        ixws_dir = (f"thirdparty/ixwebsocket/build_{platform_name}_{build_target}/Release"
-                    if platform_name == "windows"
-                    else f"thirdparty/ixwebsocket/build_{platform_name}_{build_target}")
-        cfg_env.Append(LIBPATH=[ixws_dir] + _thirdparty_libdirs())
+    # Transport + AES link: the IXWebSocket static lib (HTTP/TLS for
+    # idtx_transport) plus zstd/openssl from the vcpkg static triplet.
+    # LIBPATHs discovered so the link resolves without a hand-set LIB var.
+    ixws_dir = (f"thirdparty/ixwebsocket/build_{platform_name}_{build_target}/Release"
+                if platform_name == "windows"
+                else f"thirdparty/ixwebsocket/build_{platform_name}_{build_target}")
+    cfg_env.Append(LIBPATH=[ixws_dir] + _thirdparty_libdirs())
 
     cfg_env.Append(LIBS=[
         "usd_ms",
         "tbb12" if platform_name == "windows" else "tbb.12",
         "libidtx_usd",
     ])
-    # zstd / libcrypto are only pulled in by the caibx transport + AES
-    # trio. When that's compiled out (idtx_skip_transport=1) the link must
-    # NOT reference them, or it fails on a missing zstd.lib / libcrypto.lib.
-    #   zstd      — .cacnk compress/decompress (idtx_chunker.cpp). OpenUSD
-    #               pulls it transitively but doesn't re-export it.
-    #   libcrypto — AES-128-GCM (idtx_aes.cpp); ixwebsocket's OpenSSL sibling.
-    if ARGUMENTS.get('idtx_skip_transport', '0') == '0':
-        if platform_name == "windows":
-            cfg_env.Append(LIBS=[
-                "ixwebsocket", "zstd", "libssl", "libcrypto",
-                # Win32 deps: OpenSSL needs advapi32 (RegisterEventSource),
-                # crypt32 (cert store), user32; IXWebSocket needs ws2_32
-                # (sockets); openssl's RAND/BIO pull in bcrypt.
-                "ws2_32", "crypt32", "advapi32", "user32", "bcrypt",
-            ])
-        else:
-            cfg_env.Append(LIBS=[
-                "ixwebsocket", "ssl", "crypto", "zstd", "z", "pthread", "dl",
-            ])
+    # caibx transport + AES dependencies:
+    #   ixwebsocket — HTTP/TLS client (idtx_transport.cpp)
+    #   zstd        — .cacnk compress/decompress (idtx_chunker.cpp); OpenUSD
+    #                 pulls it transitively but doesn't re-export it.
+    #   libssl/libcrypto — TLS + AES-128-GCM (idtx_aes.cpp)
+    #   Win32 syslibs — advapi32 (OpenSSL RegisterEventSource), crypt32
+    #                   (cert store), user32, ws2_32 (sockets), bcrypt (RAND/BIO).
+    if platform_name == "windows":
+        cfg_env.Append(LIBS=[
+            "ixwebsocket", "zstd", "libssl", "libcrypto",
+            "ws2_32", "crypt32", "advapi32", "user32", "bcrypt",
+        ])
+    else:
+        cfg_env.Append(LIBS=[
+            "ixwebsocket", "ssl", "crypto", "zstd", "z", "pthread", "dl",
+        ])
 
     if platform.system() == "Windows" and (env["CXX"] == "cl" or env["CC"] == "cl"):
         cfg_env.Append(CXXFLAGS=['/EHsc', '/GR', '/FS', '/std:c++20'])
@@ -202,15 +195,9 @@ def _common_env(env, *, building_dll, static):
     return cfg_env
 
 
-def _sources(skip_transport=False):
-    """The single canonical source list. Both artifacts compile these.
-
-    skip_transport drops the caibx CDN-transport + crypto trio
-    (idtx_chunker / idtx_transport / idtx_aes), for a USD/VRM-only core
-    that doesn't need content-addressed streaming. Gated by the
-    `idtx_skip_transport=1` build arg; off by default.
-    """
-    srcs = [
+def _sources():
+    """The single canonical source list. Both artifacts compile these."""
+    return [
         "core/src/idtx_core.cpp",
         "core/src/idtx_skeleton.cpp",
         "core/src/idtx_mesh.cpp",
@@ -233,14 +220,6 @@ def _sources(skip_transport=False):
         "core/src/idtx_transport.cpp",
         "core/src/idtx_aes.cpp",
     ]
-    if skip_transport:
-        drop = {
-            "core/src/idtx_chunker.cpp",
-            "core/src/idtx_transport.cpp",
-            "core/src/idtx_aes.cpp",
-        }
-        srcs = [s for s in srcs if s not in drop]
-    return srcs
 
 
 def _build_idtx_core(env, shared=True, static=True):
@@ -257,8 +236,7 @@ def _build_idtx_core(env, shared=True, static=True):
     shared_extension = "dll" if platform_name == "windows" else ("dylib" if platform_name == "macos" else "so")
     static_extension = "lib" if platform_name == "windows" else "a"
 
-    skip_transport = ARGUMENTS.get('idtx_skip_transport', '0') != '0'
-    sources = list(_sources(skip_transport))
+    sources = list(_sources())
 
     # The .scn writer functions are emitted by slangc -target cpp from
     # the committed openusd-fabric/lean/shaders/godot_scn.slang (see
