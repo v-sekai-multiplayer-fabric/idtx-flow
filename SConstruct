@@ -20,6 +20,7 @@ env = Environment(
     	"openusdextension",
     	"ixwebsocket",
     	"godot_scn_writers",
+    	"generate_stubs",
     	"idtxcore",
     	"idtxcli",
     	"idtxflow_ext",
@@ -75,7 +76,14 @@ env = env.BuildGodotCPP()
 env.GenerateGodotScnWriters()
 # Build the engine-agnostic C ABI core (idtx_core) — both libidtxflow
 # (Godot) and the future Unity P/Invoke assembly link against this.
-env.BuildIdtxCore()
+env.BuildIdtxCore(static=ARGUMENTS.get('idtx_static', '1') != '0')
+# Emit the dlopen dispatch table for the core C ABI from
+# core/idtx_core.sigs (POSIX stubs / Windows .def), and gate .sigs<->
+# header ABI drift. Runs after BuildIdtxCore so the Windows .def can be
+# named for the freshly-resolved libidtx_core artifact. Hosts that load
+# core at runtime (instead of linking it) compile the emitted table; the
+# standalone build itself just regenerates + drift-checks it.
+env.GenerateCoreStubs()
 # Standalone CLI for smoke-testing the avatar pipeline against the core.
 env.BuildIdtxCli()
 # Build the extension bootstrap static library (for dependent third-party extensions)

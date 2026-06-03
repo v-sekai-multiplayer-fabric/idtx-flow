@@ -23,8 +23,12 @@ Usage in SConstruct:
     env.BuildIdtxCore(static=False)  # shared only (legacy callers)
     env.BuildIdtxCore(shared=False)  # static only (engine-module CI)
 """
+import glob
 import os
 import platform
+import shutil
+
+from SCons.Script import ARGUMENTS
 
 
 def generate(env):
@@ -33,6 +37,45 @@ def generate(env):
 
 def exists(env):
     return True
+
+
+def _thirdparty_includes():
+    """Discover header dirs for the flat-C third-party deps idtx_core
+    compiles against — zstd.h (idtx_chunker / idtx_godot_scn_glue) and
+    openssl/evp.h (idtx_aes). The libraries are already linked via LIBS;
+    only the headers need to be on CPPPATH. Returned dirs are filtered to
+    those that exist, so this is a no-op where a dev shell already has
+    them on the INCLUDE env var.
+
+    NOTE: the long-term move is to dlopen libcrypto/zstd through a .sigs
+    stub table (see scons/generate_stubs.py) instead of compiling against
+    their headers at all — at which point this discovery goes away.
+    """
+    dirs = []
+    # openssl — vcpkg static triplet ships openssl/evp.h under include/.
+    dirs += glob.glob("thirdparty/vcpkg/installed/*/include")
+    # zstd — derive from the zstd CLI's sibling include/ (scoop/brew/etc),
+    # and fall back to scanning scoop app include dirs since the CLI may
+    # not be on PATH inside the build shell.
+    zstd_exe = shutil.which("zstd")
+    if zstd_exe:
+        inc = os.path.normpath(os.path.join(os.path.dirname(zstd_exe), "..", "include"))
+        dirs.append(inc)
+    # Specifically the zstd app — NOT a wildcard over all scoop apps, or a
+    # partial zstd.h bundled by another tool (e.g. curl ships a stripped
+    # one with a different ZSTD_decompress signature) can shadow the real
+    # header on the include search path.
+    home = os.path.expanduser("~")
+    dirs += glob.glob(os.path.join(home, "scoop", "apps", "zstd", "current", "include"))
+    # Keep only dirs that actually hold the headers we need.
+    keep = []
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
+        if os.path.isfile(os.path.join(d, "zstd.h")) or \
+           os.path.isfile(os.path.join(d, "openssl", "evp.h")):
+            keep.append(d)
+    return keep
 
 
 def _common_env(env, *, building_dll, static):
@@ -68,6 +111,11 @@ def _common_env(env, *, building_dll, static):
         env.get('idtx_godot_scn_prelude_dir', ''),
     ])
 
+    # zstd.h (idtx_chunker / idtx_godot_scn_glue) and openssl/evp.h
+    # (idtx_aes) — headers for already-linked flat-C deps. Discovered so
+    # a clean checkout builds without a hand-primed INCLUDE env var.
+    cfg_env.Append(CPPPATH=_thirdparty_includes())
+
     cfg_env.Append(LIBPATH=[
         f"{usd_root}/lib",
         f"{usd_extension_path}/libs/{platform_name}",
@@ -77,15 +125,18 @@ def _common_env(env, *, building_dll, static):
         "usd_ms",
         "tbb12" if platform_name == "windows" else "tbb.12",
         "libidtx_usd",
-        # Reused system / transitive deps:
-        #   zstd       — for .cacnk compress/decompress (idtx_chunker.cpp).
-        #                OpenUSD pulls it in transitively but doesn't
-        #                re-export, so we link explicitly.
-        #   libcrypto  — for AES-128-GCM (idtx_aes.cpp). ixwebsocket
-        #                links OpenSSL already; libcrypto is its sibling.
-        "zstd",
-        "libcrypto" if platform_name == "windows" else "crypto",
     ])
+    # zstd / libcrypto are only pulled in by the caibx transport + AES
+    # trio. When that's compiled out (idtx_skip_transport=1) the link must
+    # NOT reference them, or it fails on a missing zstd.lib / libcrypto.lib.
+    #   zstd      — .cacnk compress/decompress (idtx_chunker.cpp). OpenUSD
+    #               pulls it transitively but doesn't re-export it.
+    #   libcrypto — AES-128-GCM (idtx_aes.cpp); ixwebsocket's OpenSSL sibling.
+    if ARGUMENTS.get('idtx_skip_transport', '0') == '0':
+        cfg_env.Append(LIBS=[
+            "zstd",
+            "libcrypto" if platform_name == "windows" else "crypto",
+        ])
 
     if platform.system() == "Windows" and (env["CXX"] == "cl" or env["CC"] == "cl"):
         cfg_env.Append(CXXFLAGS=['/EHsc', '/GR', '/FS', '/std:c++20'])
@@ -118,9 +169,15 @@ def _common_env(env, *, building_dll, static):
     return cfg_env
 
 
-def _sources():
-    """The single canonical source list. Both artifacts compile these."""
-    return [
+def _sources(skip_transport=False):
+    """The single canonical source list. Both artifacts compile these.
+
+    skip_transport drops the caibx CDN-transport + crypto trio
+    (idtx_chunker / idtx_transport / idtx_aes), for a USD/VRM-only core
+    that doesn't need content-addressed streaming. Gated by the
+    `idtx_skip_transport=1` build arg; off by default.
+    """
+    srcs = [
         "core/src/idtx_core.cpp",
         "core/src/idtx_skeleton.cpp",
         "core/src/idtx_mesh.cpp",
@@ -143,6 +200,14 @@ def _sources():
         "core/src/idtx_transport.cpp",
         "core/src/idtx_aes.cpp",
     ]
+    if skip_transport:
+        drop = {
+            "core/src/idtx_chunker.cpp",
+            "core/src/idtx_transport.cpp",
+            "core/src/idtx_aes.cpp",
+        }
+        srcs = [s for s in srcs if s not in drop]
+    return srcs
 
 
 def _build_idtx_core(env, shared=True, static=True):
@@ -159,7 +224,8 @@ def _build_idtx_core(env, shared=True, static=True):
     shared_extension = "dll" if platform_name == "windows" else ("dylib" if platform_name == "macos" else "so")
     static_extension = "lib" if platform_name == "windows" else "a"
 
-    sources = list(_sources())
+    skip_transport = ARGUMENTS.get('idtx_skip_transport', '0') != '0'
+    sources = list(_sources(skip_transport))
 
     # The .scn writer functions are emitted by slangc -target cpp from
     # the committed openusd-fabric/lean/shaders/godot_scn.slang (see
@@ -192,10 +258,16 @@ def _build_idtx_core(env, shared=True, static=True):
     static_lib = None
     if static:
         static_env = _common_env(env, building_dll=False, static=True)
-        # StaticLibrary objects (.obj / .o) are kept separate from the
-        # SharedLibrary ones by giving the archive a distinct base name
-        # (`_static` suffix). SCons compiles each .cpp twice — once for
-        # each config — because the CPPDEFINES differ.
+        # SCons compiles each .cpp twice — once per config — because the
+        # CPPDEFINES differ (IDTX_CORE_BUILDING_DLL vs IDTX_CORE_STATIC).
+        # The two compiles must land on DISTINCT object files or SCons
+        # raises "Two environments with different actions for the same
+        # target": on Windows SHOBJSUFFIX == OBJSUFFIX == .obj, so the
+        # shared and static objects derive the same name from each source
+        # and collide. Giving the static config its own object prefix
+        # separates them (the `_static` archive name alone does not —
+        # that renames the .lib, not the per-source .obj/.o).
+        static_env['OBJPREFIX'] = 'static_' + static_env.get('OBJPREFIX', '')
         static_lib = static_env.StaticLibrary(
             f"{build_dir}/{library_name}_static.{static_extension}",
             sources,

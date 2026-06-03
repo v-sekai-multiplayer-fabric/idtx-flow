@@ -14,8 +14,10 @@
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/array.h>
+#include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/valueTypeName.h>
+#include <pxr/usd/usd/editTarget.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
@@ -36,6 +38,7 @@
 #include <pxr/usd/usdSkel/skeleton.h>
 #include <pxr/usd/usdSkel/tokens.h>
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -54,7 +57,14 @@ static pxr::SdfPath emit_root_xform(
 
     float m[16];
     idtx_avatar_get_root_transform(avatar, m);
-    auto op = xf.AddTransformOp(pxr::UsdGeomXformOp::PrecisionDouble);
+    // MakeMatrixXform (not AddTransformOp): it resets xformOpOrder before
+    // adding the single matrix op, so it is idempotent. In the layer-aware
+    // modes (OVERLAY / FLATTEN) the root prim already carries an
+    // xformOp:transform from the composed source; AddTransformOp would
+    // raise "xformOp:transform already exists" and leave a duplicate /
+    // inverse op the value can't be set on. MakeMatrixXform overrides
+    // cleanly and is identical to AddTransformOp on a fresh flat stage.
+    auto op = xf.MakeMatrixXform();
     op.Set(float16_to_gf_matrix(m));
 
     return root_path;
@@ -565,19 +575,28 @@ static void emit_physics_collider(
 
 }  // namespace idtx::core::detail
 
-extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
-    const idtx_avatar_t* avatar,
-    const char* path)
+namespace idtx::core::detail {
+
+// Author the avatar's full prim tree into `stage` under the stage's
+// current edit target: stage metadata (upAxis / metersPerUnit), root
+// Xform (becomes the default prim), VRM-upgrade provenance stamp,
+// skeleton, materials, meshes (with material + skeleton binding),
+// physics colliders, and spring bones.
+//
+// Shared by every export mode. The caller owns stage creation and edit-
+// target selection, so the same authoring runs whether we're writing a
+// fresh flat stage, an overlay sublayer, or the session layer ahead of a
+// flatten. Emitting `def`s here is intentional: when this layer is the
+// strongest in a composition the avatar's opinions win, and the source's
+// references / payloads / untouched prims compose in underneath.
+static void author_avatar_tree(
+    pxr::UsdStageRefPtr const& stage,
+    idtx_avatar_t const* avatar)
 {
-    if (avatar == nullptr || path == nullptr) return 1;
-
-    pxr::UsdStageRefPtr stage = pxr::UsdStage::CreateNew(std::string(path));
-    if (!stage) return 2;
-
-    stage->SetMetadata(pxr::TfToken("upAxis"),       pxr::VtValue(pxr::TfToken("Y")));
+    stage->SetMetadata(pxr::TfToken("upAxis"),        pxr::VtValue(pxr::TfToken("Y")));
     stage->SetMetadata(pxr::TfToken("metersPerUnit"), pxr::VtValue(1.0));
 
-    pxr::SdfPath root_path = idtx::core::detail::emit_root_xform(
+    pxr::SdfPath root_path = emit_root_xform(
         stage, pxr::SdfPath::AbsoluteRootPath(), avatar);
     stage->SetDefaultPrim(stage->GetPrimAtPath(root_path));
 
@@ -592,23 +611,32 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
         root_prim.SetCustomData(cd);
     }
 
-    pxr::SdfPath skel_root_path = idtx::core::detail::emit_skeleton(
+    pxr::SdfPath skel_root_path = emit_skeleton(
         stage, root_path, idtx_avatar_get_skeleton(avatar));
     pxr::SdfPath skel_path = skel_root_path.IsEmpty()
         ? pxr::SdfPath()
         : skel_root_path.AppendChild(pxr::TfToken("Skeleton"));
 
-    // Materials live in a scope so they can be referenced by mesh
-    // binding by path. Emit them first, then meshes pick them up.
+    // Materials live in a dedicated Materials scope so they can be
+    // referenced by mesh binding by path AND can never collide with a
+    // mesh/skeleton prim of the same name under the root. (An unnamed
+    // mesh and unnamed material both sanitise to "Unnamed"; emitting both
+    // as direct root children redefined the Material prim as a Mesh, so
+    // material:binding then targeted a non-material — usdchecker flags
+    // this as MaterialBindingCollectionValidator.InvalidResourcePath.)
     std::vector<pxr::SdfPath> material_paths;
     {
-        std::set<std::string> mat_siblings;
         int32_t mat_count = idtx_avatar_get_material_count(avatar);
         material_paths.reserve(static_cast<size_t>(mat_count));
-        for (int32_t i = 0; i < mat_count; ++i) {
-            material_paths.push_back(
-                idtx::core::detail::emit_material(
-                    stage, root_path, idtx_avatar_get_material(avatar, i), mat_siblings));
+        if (mat_count > 0) {
+            pxr::SdfPath materials_root = root_path.AppendChild(pxr::TfToken("Materials"));
+            pxr::UsdGeomScope::Define(stage, materials_root);
+            std::set<std::string> mat_siblings;
+            for (int32_t i = 0; i < mat_count; ++i) {
+                material_paths.push_back(
+                    emit_material(
+                        stage, materials_root, idtx_avatar_get_material(avatar, i), mat_siblings));
+            }
         }
     }
 
@@ -616,7 +644,7 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
         std::set<std::string> mesh_siblings;
         int32_t mesh_count = idtx_avatar_get_mesh_count(avatar);
         for (int32_t i = 0; i < mesh_count; ++i) {
-            pxr::SdfPath mp = idtx::core::detail::emit_mesh(
+            pxr::SdfPath mp = emit_mesh(
                 stage, root_path, idtx_avatar_get_mesh(avatar, i), mesh_siblings);
             if (mp.IsEmpty()) continue;
             int32_t mat_index = idtx_avatar_get_mesh_material(avatar, i);
@@ -633,7 +661,7 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
                 binding.Bind(mat);
             }
 
-            idtx::core::detail::bind_mesh_to_skeleton(
+            bind_mesh_to_skeleton(
                 stage, mp, skel_path, idtx_avatar_get_mesh(avatar, i));
         }
     }
@@ -648,7 +676,7 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
         pxr::UsdGeomScope::Define(stage, phys_root);
         std::set<std::string> phys_siblings;
         for (int32_t i = 0; i < phys_count; ++i) {
-            idtx::core::detail::emit_physics_collider(
+            emit_physics_collider(
                 stage, phys_root, idtx_avatar_get_physics_collider(avatar, i), phys_siblings);
         }
     }
@@ -663,16 +691,122 @@ extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
 
         std::set<std::string> chain_siblings;
         for (int32_t i = 0; i < chain_count; ++i) {
-            idtx::core::detail::emit_spring_chain(
+            emit_spring_chain(
                 stage, spring_root, idtx_avatar_get_spring_chain(avatar, i), chain_siblings);
         }
         std::set<std::string> col_siblings;
         for (int32_t i = 0; i < collider_count; ++i) {
-            idtx::core::detail::emit_spring_collider(
+            emit_spring_collider(
                 stage, spring_root, idtx_avatar_get_spring_collider(avatar, i), col_siblings);
         }
     }
+}
 
-    if (!stage->GetRootLayer()->Save()) return 3;
+}  // namespace idtx::core::detail
+
+extern "C" IDTX_CORE_API void idtx_usd_export_opts_init(idtx_usd_export_opts_t* opts)
+{
+    if (opts == nullptr) return;
+    opts->mode             = IDTX_USD_NEW_FLAT;
+    opts->source_path      = nullptr;
+    opts->edit_target_id   = nullptr;
+    opts->reflect_per_prim = 0;
+}
+
+extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd_ex(
+    const idtx_avatar_t* avatar,
+    const char* path,
+    const idtx_usd_export_opts_t* opts)
+{
+    if (avatar == nullptr || path == nullptr) return 1;
+
+    idtx_usd_export_opts_t o;
+    idtx_usd_export_opts_init(&o);
+    if (opts != nullptr) o = *opts;
+    if (o.mode < 0 || o.mode >= IDTX_USD_MODE_MAX) return 1;
+
+    // Resolve the source stage: an explicit opts.source_path wins, else
+    // the import-time provenance stamped on the avatar handle.
+    std::string source;
+    if (o.source_path != nullptr && o.source_path[0] != '\0') {
+        source = o.source_path;
+    } else {
+        const char* prov = idtx_avatar_get_source_usd_path(avatar);
+        if (prov != nullptr && prov[0] != '\0') source = prov;
+    }
+
+    // Without a source there is nothing to layer against — every mode
+    // collapses to the flat single-layer write.
+    idtx_usd_export_mode_t mode = source.empty() ? IDTX_USD_NEW_FLAT : o.mode;
+
+    // ---- NEW_FLAT: fresh single-layer stage (the legacy behaviour). ----
+    if (mode == IDTX_USD_NEW_FLAT) {
+        pxr::UsdStageRefPtr stage = pxr::UsdStage::CreateNew(std::string(path));
+        if (!stage) return 2;
+        idtx::core::detail::author_avatar_tree(stage, avatar);
+        if (!stage->GetRootLayer()->Save()) return 3;
+        return 0;
+    }
+
+    // ---- FLATTEN: compose source + avatar deltas, write standalone. -----
+    if (mode == IDTX_USD_FLATTEN) {
+        pxr::UsdStageRefPtr src = pxr::UsdStage::Open(source);
+        if (!src) return 4;
+        // Author the avatar onto the session layer so the source's own
+        // layers are never mutated; Flatten() then composes root +
+        // session + sublayers (resolving references/payloads inline)
+        // into a single standalone layer.
+        src->SetEditTarget(pxr::UsdEditTarget(src->GetSessionLayer()));
+        idtx::core::detail::author_avatar_tree(src, avatar);
+        pxr::SdfLayerRefPtr flat = src->Flatten();
+        if (!flat) return 3;
+        if (!flat->Export(std::string(path))) return 3;
+        return 0;
+    }
+
+    // ---- OVERLAY / LAYER_ONLY: a delta layer over the source. ----------
+    // `path` becomes a new layer whose strongest opinions are the
+    // avatar's; the source is pulled in as a weaker sublayer so its
+    // references, payloads, and any prims the avatar doesn't touch all
+    // survive. Only the delta layer is written.
+    //
+    // OVERLAY and LAYER_ONLY currently share this sublayer artifact. The
+    // planned LAYER_ONLY refinement — source pulled by a composition
+    // reference arc rather than a sublayer, with only changed attributes
+    // authored as `over`s (true delta minimisation) — is tracked as
+    // follow-up; today both modes emit the full avatar onto the delta.
+    pxr::SdfLayerRefPtr over = pxr::SdfLayer::CreateNew(std::string(path));
+    if (!over) return 2;
+    over->GetSubLayerPaths().push_back(source);
+
+    pxr::UsdStageRefPtr stage = pxr::UsdStage::Open(over);
+    if (!stage) return 2;
+
+    // Route authoring to a named sublayer when requested, else the new
+    // delta layer (the stage's strongest, default edit target).
+    if (o.edit_target_id != nullptr && o.edit_target_id[0] != '\0') {
+        pxr::SdfLayerRefPtr target = pxr::SdfLayer::Find(o.edit_target_id);
+        if (!target) return 5;
+        stage->SetEditTarget(pxr::UsdEditTarget(target));
+    } else {
+        stage->SetEditTarget(pxr::UsdEditTarget(over));
+    }
+
+    idtx::core::detail::author_avatar_tree(stage, avatar);
+
+    if (!over->Save()) return 3;
     return 0;
+}
+
+// Flat export — the original destructive single-layer write, preserved
+// as a thin forwarder so existing callers and the C ABI symbol are
+// unchanged. NEW_FLAT mode ignores any source provenance on the avatar,
+// so this is byte-for-byte the legacy behaviour.
+extern "C" IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
+    const idtx_avatar_t* avatar,
+    const char* path)
+{
+    idtx_usd_export_opts_t o;
+    idtx_usd_export_opts_init(&o);   // mode = IDTX_USD_NEW_FLAT
+    return idtx_core_export_avatar_to_usd_ex(avatar, path, &o);
 }

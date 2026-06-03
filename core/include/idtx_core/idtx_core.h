@@ -289,6 +289,16 @@ IDTX_CORE_API void idtx_avatar_get_root_transform(const idtx_avatar_t* avatar, f
 IDTX_CORE_API void        idtx_avatar_set_source_vrm_version(idtx_avatar_t* avatar, const char* version);
 IDTX_CORE_API const char* idtx_avatar_get_source_vrm_version(const idtx_avatar_t* avatar);
 
+// Source USD stage this avatar was imported from, recorded by
+// idtx_core_import_avatar_from_usd. The layer-aware exporter
+// (idtx_core_export_avatar_to_usd_ex) falls back to this path when its
+// opts.source_path is NULL, so an import→export round-trip authors
+// deltas against the originating stage without the host re-supplying it.
+// Empty string = avatar was not imported from USD (authored in-host or
+// from VRM). Setting it transfers no ownership; the string is copied.
+IDTX_CORE_API void        idtx_avatar_set_source_usd_path(idtx_avatar_t* avatar, const char* path);
+IDTX_CORE_API const char* idtx_avatar_get_source_usd_path(const idtx_avatar_t* avatar);
+
 // Skeleton — at most one. Replacing destroys the previous skeleton.
 IDTX_CORE_API void idtx_avatar_set_skeleton(idtx_avatar_t* avatar, idtx_skeleton_t* skel);
 IDTX_CORE_API idtx_skeleton_t* idtx_avatar_get_skeleton(const idtx_avatar_t* avatar);
@@ -451,6 +461,88 @@ IDTX_CORE_API idtx_physics_collider_t* idtx_avatar_get_physics_collider(const id
 IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd(
     const idtx_avatar_t* avatar,
     const char* path);
+
+// ---------------------------------------------------------------------
+// Layer-aware USD export (the round-trip / composition-aware path).
+//
+// idtx_core_export_avatar_to_usd() above is the destructive flat write:
+// it CreateNew()s a single-layer stage and authors every prim fresh.
+// That loses the layer structure of a stage the avatar was imported
+// from — references, payloads, and sublayer routing all collapse.
+//
+// _ex() is a strict superset. With mode=IDTX_USD_NEW_FLAT and
+// source_path=NULL it is byte-for-byte identical to the flat call
+// (which is in fact implemented as a forwarder to this function). The
+// other three modes consult `source_path` — the stage the avatar was
+// imported from — and author the avatar's data as deltas against it:
+//
+//   IDTX_USD_NEW_FLAT   Fresh single-layer stage. `source_path` ignored.
+//                       The legacy behaviour.
+//   IDTX_USD_OVERLAY    Open `source_path`, author changed attributes as
+//                       `over` opinions on a NEW root layer that sublayers
+//                       the source. References/payloads in the source are
+//                       preserved; only deltas are written to `path`.
+//   IDTX_USD_LAYER_ONLY Write ONLY the delta layer to `path`; the source
+//                       is pulled in by a layer arc, so the consumer
+//                       composes the two files. The thinnest artifact.
+//                       NOTE: currently shares OVERLAY's implementation
+//                       (source attached as a sublayer, full avatar
+//                       authored onto the delta). The planned refinement
+//                       — source pulled by a composition *reference* arc
+//                       with only changed attributes authored as overs —
+//                       is tracked as follow-up.
+//   IDTX_USD_FLATTEN    Compose `source_path` + the avatar's deltas, then
+//                       flatten the whole layer stack into a single
+//                       standalone stage at `path`. References/payloads
+//                       are resolved inline.
+//
+// `edit_target_id`: for a composed source with multiple sublayers, names
+// which sublayer the `over` opinions route to (the layer's identifier as
+// returned by import-side provenance). NULL = the root/strongest layer.
+//
+// `reflect_per_prim`: 0 authors the avatar subtree as a unit; 1 mirrors
+// each imageable prim individually so callers can edit Xform prims in
+// isolation (answers the per-prim-editability question in upstream
+// idtx-flow#18 consideration 1).
+//
+// Provenance: when `source_path` is NULL but the avatar carries an
+// imported source path (stamped by idtx_core_import_avatar_from_usd),
+// that path is used automatically. An explicit `source_path` overrides.
+//
+// Error codes extend the flat path:
+//   0 = success                 3 = USD write (Save/Export) failed
+//   1 = invalid argument        4 = source_path open failed
+//   2 = stage creation failed   5 = requested edit_target_id not found
+// ---------------------------------------------------------------------
+
+typedef enum idtx_usd_export_mode
+{
+    IDTX_USD_NEW_FLAT   = 0,  // fresh single-layer stage (legacy default)
+    IDTX_USD_OVERLAY    = 1,  // deltas as `over`s on a layer that sublayers source
+    IDTX_USD_LAYER_ONLY = 2,  // write only the delta layer; it references source
+    IDTX_USD_FLATTEN    = 3,  // compose source + deltas, flatten to standalone
+    IDTX_USD_MODE_MAX   = 4,  // sentinel: count of modes / bounds check (Godot convention)
+} idtx_usd_export_mode_t;
+
+typedef struct idtx_usd_export_opts
+{
+    idtx_usd_export_mode_t mode;            // default IDTX_USD_NEW_FLAT
+    const char*            source_path;     // imported-from stage; NULL = use avatar provenance / none
+    const char*            edit_target_id;  // sublayer to route overs to; NULL = root layer
+    int32_t                reflect_per_prim;// 0 = subtree as a unit, 1 = per imageable prim
+} idtx_usd_export_opts_t;
+
+// Convenience initializer — sets mode=IDTX_USD_NEW_FLAT and all pointers
+// NULL / counts 0. Function (not a header struct literal) for the same
+// reason idtx_scn_opts_init is: C forbids non-const file-scope struct
+// initializers in a header cleanly.
+IDTX_CORE_API void idtx_usd_export_opts_init(idtx_usd_export_opts_t* opts);
+
+// Layer-aware export. `opts` NULL = flat defaults (legacy behaviour).
+IDTX_CORE_API int32_t idtx_core_export_avatar_to_usd_ex(
+    const idtx_avatar_t* avatar,
+    const char* path,
+    const idtx_usd_export_opts_t* opts);
 
 // Open a USD stage at `path` and rebuild an idtx_avatar_t* from its
 // default prim (or the first prim if no default is set). Returns NULL

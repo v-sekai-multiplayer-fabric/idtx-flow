@@ -37,12 +37,13 @@ static int usage(const char* arg0)
         "  %s vrm-to-usd <in.vrm>  <out.usda>\n"
         "  %s usd-to-usd <in.usda> <out.usda>   (round-trip)\n"
         "  %s vrm-to-vrm <in.vrm>  <out.vrm>    (round-trip)\n"
+        "  %s usd-export <in.usda> <out.usda> --mode <flat|overlay|layer-only|flatten> [--source <src.usda>]\n"
         "  %s reconstruct-quads <in.usda> <out.usda> [planarity_deg]\n"
         "  %s bake   <in.bin>     --aria <url> [--auth TOKEN]\n"
         "  %s fetch  <caibx-url>  --output <out.bin> [--aria <url>] [--auth TOKEN]\n"
         "  %s verify <caibx-url>  [--aria <url>] [--auth TOKEN]\n"
         "  %s version\n",
-        arg0, arg0, arg0, arg0, arg0, arg0, arg0, arg0, arg0);
+        arg0, arg0, arg0, arg0, arg0, arg0, arg0, arg0, arg0, arg0);
     return 2;
 }
 
@@ -284,6 +285,57 @@ static int run_convert(
     return 0;
 }
 
+// usd-export — exercise the layer-aware exporter idtx_core_export_avatar_to_usd_ex.
+// Imports <in.usda> (which stamps the avatar's source-USD provenance to
+// <in.usda>), then re-exports under the chosen mode. --source overrides
+// the stage the deltas are layered against; without it the import
+// provenance is used, so `usd-export in.usda out.usda --mode flatten`
+// round-trips in.usda through the flattening path.
+static int cmd_usd_export(int argc, char** argv)
+{
+    const char* in_path  = argv[2];
+    const char* out_path = argv[3];
+
+    idtx_usd_export_opts_t opts;
+    idtx_usd_export_opts_init(&opts);
+    const char* mode_str = "flat";
+
+    for (int i = 4; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--mode" && i + 1 < argc) {
+            mode_str = argv[++i];
+            if      (std::string(mode_str) == "flat")       opts.mode = IDTX_USD_NEW_FLAT;
+            else if (std::string(mode_str) == "overlay")    opts.mode = IDTX_USD_OVERLAY;
+            else if (std::string(mode_str) == "layer-only") opts.mode = IDTX_USD_LAYER_ONLY;
+            else if (std::string(mode_str) == "flatten")    opts.mode = IDTX_USD_FLATTEN;
+            else {
+                std::fprintf(stderr, "usd-export: unknown --mode '%s'\n", mode_str);
+                return 2;
+            }
+        } else if (a == "--source" && i + 1 < argc) {
+            opts.source_path = argv[++i];
+        } else {
+            std::fprintf(stderr, "usd-export: unexpected arg '%s'\n", argv[i]);
+            return 2;
+        }
+    }
+
+    idtx_avatar_t* a = idtx_core_import_avatar_from_usd(in_path);
+    if (a == nullptr) {
+        std::fprintf(stderr, "usd-export: failed to import %s\n", in_path);
+        return 3;
+    }
+    int32_t rc = idtx_core_export_avatar_to_usd_ex(a, out_path, &opts);
+    idtx_avatar_destroy(a);
+    if (rc != 0) {
+        std::fprintf(stderr, "usd-export: export to %s failed (mode=%s, rc=%d)\n",
+                     out_path, mode_str, rc);
+        return 4;
+    }
+    std::fprintf(stdout, "usd-export: %s -> %s ok (mode=%s)\n", in_path, out_path, mode_str);
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2) return usage(argv[0]);
@@ -319,6 +371,7 @@ int main(int argc, char** argv)
             &idtx_core_export_avatar_to_vrm,
             argv[2], argv[3], "vrm-to-vrm");
     }
+    if (cmd == "usd-export") return cmd_usd_export(argc, argv);
     if (cmd == "bake")    return cmd_bake(argc, argv);
     if (cmd == "fetch")   return cmd_fetch(argc, argv);
     if (cmd == "verify")  return cmd_verify(argc, argv);

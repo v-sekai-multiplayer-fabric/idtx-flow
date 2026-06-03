@@ -88,8 +88,14 @@ def _generate_godot_scn_writers(env):
 
     prelude_dir = _slang_include_dir()
     if prelude_dir is None:
-        print(f"  [godot_scn] slang prelude not located; expect it on system include path")
-        prelude_dir = ""
+        # The committed godot_scn.cpp #includes <slang-cpp-prelude.h>; with
+        # no slangc on PATH and the prelude not on the system include path,
+        # those translation units cannot compile. Degrade gracefully (the
+        # documented contract: idtx_core_export_avatar_to_scn returns 99)
+        # rather than breaking the whole libidtx_core build.
+        print(f"  [godot_scn] slang prelude not located; disabling .scn writer (export returns 99)")
+        env['idtx_godot_scn_available'] = False
+        return None
     else:
         print(f"  [godot_scn] slang prelude: {prelude_dir}")
 

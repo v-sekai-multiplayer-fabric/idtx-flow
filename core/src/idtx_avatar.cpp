@@ -12,6 +12,7 @@ struct idtx_avatar
 {
     std::string name;
     std::string source_vrm_version;  // "" / "0.x" / "1.0"
+    std::string source_usd_path;     // "" or the stage this avatar was imported from
     float root_transform[16] = {
         1, 0, 0, 0,
         0, 1, 0, 0,
@@ -70,6 +71,17 @@ extern "C" IDTX_CORE_API void idtx_avatar_set_source_vrm_version(idtx_avatar_t* 
 extern "C" IDTX_CORE_API const char* idtx_avatar_get_source_vrm_version(const idtx_avatar_t* avatar)
 {
     return (avatar != nullptr) ? avatar->source_vrm_version.c_str() : "";
+}
+
+extern "C" IDTX_CORE_API void idtx_avatar_set_source_usd_path(idtx_avatar_t* avatar, const char* path)
+{
+    if (avatar == nullptr) return;
+    avatar->source_usd_path = (path != nullptr) ? path : "";
+}
+
+extern "C" IDTX_CORE_API const char* idtx_avatar_get_source_usd_path(const idtx_avatar_t* avatar)
+{
+    return (avatar != nullptr) ? avatar->source_usd_path.c_str() : "";
 }
 
 extern "C" IDTX_CORE_API void idtx_avatar_get_root_transform(const idtx_avatar_t* avatar, float out_matrix[16])

@@ -571,6 +571,18 @@ extern "C" IDTX_CORE_API idtx_avatar_t* idtx_core_import_avatar_from_usd(const c
     idtx_avatar_t* avatar = idtx_avatar_create();
     idtx_avatar_set_name(avatar, root.GetName().GetString().c_str());
 
+    // Round-trip provenance: remember the stage we came from so a later
+    // idtx_core_export_avatar_to_usd_ex() can author deltas against it
+    // (overlay / layer-only / flatten modes) without the host re-passing
+    // the source path. Use the stage's resolved root-layer identifier so
+    // sublayered / packaged stages resolve back to the right asset.
+    {
+        std::string src = stage->GetRootLayer()
+            ? stage->GetRootLayer()->GetIdentifier()
+            : std::string(path);
+        idtx_avatar_set_source_usd_path(avatar, src.c_str());
+    }
+
     // Recover source-VRM-version provenance from the root prim's
     // customData. Empty when the avatar was never upgraded.
     pxr::VtDictionary cd = root.GetCustomData();
