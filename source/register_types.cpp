@@ -5,8 +5,6 @@
 #include <godot_cpp/godot.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 
-#include <idtxflow/converter/MdlMaterialConverter.h>
-#include <idtxflow/resolver/HttpResolver.h>
 #include <idtxflow_godot/nodes/UsdStageNode3D.h>
 
 #include "nodes/UsdStaticBodyNode3D.h"
@@ -90,10 +88,10 @@ void initialize_idtxflow_module(ModuleInitializationLevel p_level) {
     idtxflow::converter::StartupMdlMaterialConverter(extension_dir, additionalModulPaths);
 #endif
     
-    // Configure the HTTP asset resolver with the default IXWebSocket-based fetcher
-    pxr::UsdHttpAssetResolver::Configure(
-        ProjectSettings::get_singleton()->globalize_path("user://usd_cache").utf8().get_data());
-    
+    // NOTE: USD asset resolution (res://, http://) now belongs inside libidtx_core
+    // (the single OpenUSD consumer) and will be driven by a host asset-IO callback
+    // — Phase 2. Until then the core opens filesystem-path stages directly; this
+    // extension links zero OpenUSD, so it no longer registers a pxr ArResolver.
     IDTX_LOGF(IDTX_INFO, "GDExtension initialized");
 }
 
