@@ -2,7 +2,7 @@ name: GDExtension PR
 
 on:
   pull_request:
-    branches: [main]
+    branches: [v-sekai, main]
 
 permissions:
   contents: read
