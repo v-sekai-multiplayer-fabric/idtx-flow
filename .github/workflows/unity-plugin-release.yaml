@@ -1,0 +1,80 @@
+name: Unity Plugin Release
+
+# Builds the Unity native plugin headlessly (no Unity editor) on Windows +
+# macOS and publishes the packaged UPM package (com.vsekai.idtxcore, including
+# the built native companions and the usd~ OpenUSD registry) as a GitHub
+# release. Version is read from unity/IdtxCore/package.json; the tag is
+# unity-v<version> so it never collides with the GDExtension's v<version> tags.
+
+on:
+  workflow_dispatch:
+    branches:
+      - main
+
+jobs:
+  check-version:
+    if: github.ref == 'refs/heads/main'
+    name: Check version not yet released
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        #v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Verify release tag does not exist
+        run: |
+          VERSION=$(python -c "import json;print(json.load(open('unity/IdtxCore/package.json'))['version'])")
+          TAG="unity-v${VERSION}"
+          echo "Checking if tag $TAG already exists..."
+          if git tag --list | grep -qx "$TAG"; then
+            echo "::error::Tag $TAG already exists. Bump \"version\" in unity/IdtxCore/package.json before releasing."
+            exit 1
+          fi
+          echo "Tag $TAG is free. Version is valid."
+
+  build:
+    if: github.ref == 'refs/heads/main'
+    name: Build
+    uses: ./.github/workflows/unity-plugin-build.yaml
+
+  release:
+    if: github.ref == 'refs/heads/main'
+    name: Create GitHub Release
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        #v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Download all artifacts
+        # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: artifacts
+
+      - name: Create Release Tag
+        id: tag
+        run: |
+          VERSION=$(python -c "import json;print(json.load(open('unity/IdtxCore/package.json'))['version'])")
+          TAG="unity-v${VERSION}"
+          echo "release_tag=$TAG" >> "$GITHUB_OUTPUT"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub Release
+        #v2.6.1
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe
+        with:
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          name: Unity Plugin ${{ steps.tag.outputs.release_tag }}
+          files: |
+            artifacts/**/com.vsekai.idtxcore-*.zip

@@ -312,9 +312,21 @@ def _build_idtx_core(env, shared=True, static=True):
                               f"flow/core/usd/libs/{platform_name}/libidtx_usd.so"]
             else:
                 companions = []
+            # Deploy every companion UNCONDITIONALLY — a missing one is a hard
+            # build error, not something to skip. The old `if os.path.exists(c)`
+            # guard was evaluated at graph-construction time, BEFORE the build
+            # ran: libidtx_usd is produced later in the same invocation (scons
+            # BuildUsdExtension -> usd/libs/<arch>/libidtx_usd.<ext>), so the
+            # guard saw no file yet and silently dropped it from the Unity
+            # deploy. Unity then loaded idtx_core.dll whose import table needs
+            # libidtx_usd.dll, the OS loader couldn't resolve it, and the first
+            # P/Invoke threw DllNotFoundException("idtx_core") — the USD/USDZ
+            # export failed with no obvious cause. Installing the path string
+            # lets SCons resolve it to its producing node (ordering the build
+            # correctly); for a genuinely absent prebuilt companion SCons halts
+            # with "Source not found", which is exactly what we want.
             for c in companions:
-                if os.path.exists(c):
-                    unity_targets.append(env.Install(unity_plugin_dir, c))
+                unity_targets.append(env.Install(unity_plugin_dir, c))
             # OpenUSD's plugin registry (ar/ sdf/ usd/ ... + plugInfo.json). Without
             # it on PXR_PLUGINPATH_NAME, creating a USD stage in the export aborts
             # the whole editor. Copy it beside usd_ms so IdtxCoreLoader can point
@@ -344,6 +356,12 @@ def _build_idtx_core(env, shared=True, static=True):
             for t in unity_targets:
                 env.Default(t)
                 targets.append(t)
+            # `scons unity_plugin` builds ONLY the Unity native plugin deploy
+            # (idtx_core.<ext> + every runtime companion + the OpenUSD usd~
+            # registry), pulling in just its prerequisites (USD extension +
+            # core DLL) and skipping the Godot/GDExtension build. CI uses this
+            # to build + verify the Unity package without the full engine build.
+            shared_env.Alias("unity_plugin", unity_targets)
 
     static_lib = None
     if static:

@@ -1,0 +1,33 @@
+name: Unity Plugin PR
+
+# Validates the Unity native plugin on every PR: build it headlessly (no Unity
+# editor needed — pure scons) on Windows + macOS with the companion-DLL guard,
+# and run the headless EditMode export test when a Unity license is configured.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "core/**"
+      - "usd/**"
+      - "shared/**"
+      - "openusd-fabric/schema/**"
+      - "unity/IdtxCore/**"
+      - "scons/**"
+      - "SConstruct"
+      - "ci/**"
+      - ".github/workflows/unity-plugin-*.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    uses: ./.github/workflows/unity-plugin-build.yaml
+
+  test:
+    name: Test
+    needs: build
+    uses: ./.github/workflows/unity-plugin-test.yaml
+    secrets: inherit
