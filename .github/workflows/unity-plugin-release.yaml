@@ -13,7 +13,7 @@ on:
 
 jobs:
   check-version:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/v-sekai' || github.ref == 'refs/heads/main'
     name: Check version not yet released
     runs-on: ubuntu-latest
     permissions:
@@ -37,12 +37,12 @@ jobs:
           echo "Tag $TAG is free. Version is valid."
 
   build:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/v-sekai' || github.ref == 'refs/heads/main'
     name: Build
     uses: ./.github/workflows/unity-plugin-build.yaml
 
   release:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/v-sekai' || github.ref == 'refs/heads/main'
     name: Create GitHub Release
     needs: [check-version, build]
     runs-on: ubuntu-latest

@@ -6,7 +6,10 @@ name: Unity Plugin PR
 
 on:
   pull_request:
-    branches: [main]
+    # The repo's default branch is `v-sekai`; `main` is kept so this keeps
+    # working if/when the default is renamed. (The gdextension-* workflows
+    # still filter on `main` only, so they don't run on v-sekai PRs yet.)
+    branches: [v-sekai, main]
     paths:
       - "core/**"
       - "usd/**"
