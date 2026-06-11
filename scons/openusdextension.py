@@ -13,12 +13,12 @@ def exists(env):
     return True
 
 #-----------------------------------------------------------------------------------------------------------------------
-# Generate the openUSD plugin code based on the provided 'schema.usda' file in the 'usd/source/' folder
+# Generate the openUSD plugin code based on the provided 'schema.usda' file in the 'flow/core/usd/source/' folder
 #-----------------------------------------------------------------------------------------------------------------------
 def _generate_usd_extensions_code(env):
     print("Generate openUSD Extension code from schema...")
 
-    extension_root = f"usd"
+    extension_root = f"flow/core/usd"
     openusd_version = env.get('openusd_version', '')
     openusd_root = os.path.abspath(f"./thirdparty/openusd-{openusd_version}-withPython")
     openusd_env = os.environ.copy()
@@ -46,10 +46,10 @@ def _build_usd_extension(env):
     openusd_version = env.get('openusd_version', '')
     openusd_root = os.path.abspath(f"./thirdparty/openusd-{openusd_version}")
 
-    extension_root = f"./usd"
-    # compile the usd plugin with the same header and lib files used in the 
+    extension_root = f"./flow/core/usd"
+    # compile the usd plugin with the same header and lib files used in the
     # IDTXFlow-SDK to ensure compatibility with it
-    idtxflow_sdk_path = "shared/include"
+    idtxflow_sdk_path = "flow/core/include"
 
     platform_name = env["platform_name"]
     build_target = env["target"]
@@ -141,7 +141,7 @@ def _build_usd_extension(env):
     extension_env.AddPostAction(shared_library, _copy_plugin_files)
 
 def _copy_plugin_files(target, source, env):
-    source_dir = f"./usd/generated"
-    target_dir = "./usd/plugin/idtx/resources"
+    source_dir = f"./flow/core/usd/generated"
+    target_dir = "./flow/core/usd/plugin/idtx/resources"
     shutil.copy(f"{source_dir}/generatedSchema.usda", f"{target_dir}")
     shutil.copy(f"{source_dir}/plugInfo.json",f"{target_dir}")
