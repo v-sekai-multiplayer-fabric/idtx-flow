@@ -1,6 +1,6 @@
 # Unity plugin CI/CD
 
-CI for the **Unity** side of the project (`unity/IdtxCore`, the
+CI for the **Unity** side of the project (`flow/adapters/unity/IdtxCore`, the
 `com.vsekai.idtxcore` UPM package). The existing `gdextension-*` workflows
 cover the Godot extension; these cover the Unity native plugin, which has a
 distinct failure mode: a missing native companion DLL makes Unity's first
@@ -19,7 +19,7 @@ scons unity_plugin target=template_release
 `unity_plugin` (alias added in `scons/idtxcore.py`) builds only the Unity
 deploy and its prerequisites — the OpenUSD extension (`libidtx_usd`) and the
 core (`idtx_core`) — and skips the Godot/GDExtension build. It installs into
-`unity/IdtxCore/Plugins/<arch>/`:
+`flow/adapters/unity/IdtxCore/Plugins/<arch>/`:
 
 | File | Role |
 |---|---|

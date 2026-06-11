@@ -56,7 +56,7 @@ jobs:
           # The build job zips the whole UPM package (IdtxCore/...) — unpack it
           # over the checked-out source so the Linux .so companions + usd~ are
           # present for the editor.
-          unzip -o dist/com.vsekai.idtxcore-Linux.zip -d unity/
+          unzip -o dist/com.vsekai.idtxcore-Linux.zip -d flow/adapters/unity/
           python ci/verify_unity_plugin.py --platform linux
         shell: bash
 

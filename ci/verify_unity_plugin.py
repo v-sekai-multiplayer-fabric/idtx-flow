@@ -86,9 +86,9 @@ def check(plugin_root, platform_name):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--plugin-root",
-                    default=os.path.join("unity", "IdtxCore", "Plugins"),
+                    default=os.path.join("flow", "adapters", "unity", "IdtxCore", "Plugins"),
                     help="Path to the Unity package's Plugins/ directory "
-                         "(default: unity/IdtxCore/Plugins).")
+                         "(default: flow/adapters/unity/IdtxCore/Plugins).")
     ap.add_argument("--platform", choices=sorted(COMPANIONS),
                     default=detect_platform(),
                     help="Target platform to verify (default: host platform).")
