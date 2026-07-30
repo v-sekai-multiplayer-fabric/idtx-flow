@@ -325,6 +325,25 @@ namespace converter
 		        bs.GetPointIndicesAttr().Get(&pointIndices);
 		        bs.GetNormalOffsetsAttr().Get(&normalOffsets);
 		        src.has_normals = !normalOffsets.empty();
+
+		        // USD blend shapes support "in-betweens" -- intermediate morph
+		        // targets at sub-unit weights (e.g. a 0.5-weight shape between
+		        // the base and the full blend shape).  These are stored as
+		        // separate UsdSkelInbetweenShape sub-shapes on the same prim.
+		        // Godot does not have a native in-between concept; supporting
+		        // them would require merging the in-between offsets into the
+		        // primary shape at a fixed weight, which breaks the 0-1 weight
+		        // range contract.  For now we explicitly skip in-betweens and
+		        // use only the primary shape offsets.  A future implementation
+		        // could promote them as separate blend shapes at the cost of
+		        // extra memory and blend-shape slot consumption.
+		        {
+		            std::vector<pxr::UsdSkelInbetweenShape> ibs = bs.GetAuthoredInbetweens();
+		            if (!ibs.empty())
+		            {
+		                // In-betweens are present but parked -- see comment above.
+		            }
+		        }
 		        src.pos.assign(numPoints, pxr::GfVec3f(0.0f));
 		        if (src.has_normals)
 		        {
@@ -443,6 +462,12 @@ namespace converter
 						class pxr::GfVec3d edge1 = points[vidx2] - points[vidx1];
 						class pxr::GfVec3d edge2 = points[vidx3] - points[vidx1];
 						normal = TypeConverter::toVector3(pxr::GfCross(edge1, edge2).GetNormalized());
+						// TODO: The inline face-normal above is a quick per-triangle
+						// normal; for smoothing-group-aware normals (Blender-style
+						// split normals) use the reusable utility at
+						// idtxflow_godot/converter/GodotNormalUtils.h
+						// (ComputeGroupedNormals).  Adapt for the generic target-engine
+						// type system.
 					}
 
 					// if the mesh provided texture coordinates (uv mapping) convert them, too
