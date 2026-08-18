@@ -1,0 +1,40 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "idtx-flow: the multiplayer-fabric mirror of IDTX Flow"
+abstract: >
+  IDTX Flow, the Immersive Data Center Management flow tooling, mirrored under this
+  organisation with the upstream name kept. The tooling is upstream's and so is its
+  README, which carries upstream's own REUSE badge; this copy exists so the fabric can
+  pin and patch it. datasource-flow is the diverged sibling that carries the Godot
+  integration, and this one stays close to its origin.
+authors:
+  - name: "Immersive Data Center Management"
+version: 0.1.0-dev.1
+date-released: "2026-08-17"
+license: MIT
+repository-code: "https://github.com/v-sekai-multiplayer-fabric/idtx-flow"
+keywords:
+  - usd
+  - gltf
+  - godot
+  - mirror
+references:
+
+  - type: software
+    title: "IDTX Flow"
+    authors:
+      - name: "Immersive Data Center Management"
+    url: "https://github.com/Immersive-Data-Center-Management/idtx-flow"
+    notes: >
+      Upstream, and GitHub carries the fork flag. This is one of five projects whose
+      manifest name is not ours to change, because the name on the remote is upstream's
+      and renaming it would break the redirect the rest of the world uses.
+
+  - type: software
+    title: "REUSE: a specification for licensing and copyright information"
+    authors:
+      - name: "Free Software Foundation Europe"
+    url: "https://reuse.software/"
+    notes: >
+      Upstream states its licensing through REUSE, which is why this repository carries
+      a LICENSES/ directory beside the root LICENSE rather than only one file.
